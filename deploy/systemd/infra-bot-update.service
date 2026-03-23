@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/infra-bot --config /etc/infra-bot/config.yaml run-update
+ExecStart=/opt/infra-bot/.venv/bin/infra-bot --config /etc/infra-bot/config.yaml run-update
 User=root
 Group=root
-
+WorkingDirectory=/opt/infra-bot/src
+Environment=PYTHONUNBUFFERED=1

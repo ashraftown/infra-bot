@@ -12,22 +12,49 @@
 - `infra_bot/`: application code
 - `deploy/config/config.example.yaml`: example host config
 - `deploy/systemd/`: service and timer units
+- `scripts/install.sh`: interactive host installer
 - `tests/`: unit and integration-style tests
 
 ## Install
 
+Primary path:
+
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
+sudo ./scripts/install.sh
+```
+
+The installer:
+
+- validates the host environment
+- prompts for Telegram and host-specific settings
+- installs the app into `/opt/infra-bot/.venv`
+- writes `/etc/infra-bot/config.yaml`
+- installs and enables the `systemd` service and timer
+
+For the three-server rollout, use stagger values:
+
+- first host: `0`
+- second host: `15`
+- third host: `30`
+
+Re-running `sudo ./scripts/install.sh` is safe. It reuses the current config as prompt defaults, refreshes the deployed source tree, reinstalls the package into the managed virtualenv, and restarts the owned services.
+
+## Manual Install
+
+```bash
+sudo mkdir -p /opt/infra-bot/src /etc/infra-bot /var/lib/infra-bot
+sudo cp -R . /opt/infra-bot/src
+cd /opt/infra-bot/src
+sudo python3 -m venv /opt/infra-bot/.venv
+sudo /opt/infra-bot/.venv/bin/pip install /opt/infra-bot/src
 ```
 
 Copy the sample config:
 
 ```bash
-sudo mkdir -p /etc/infra-bot /var/lib/infra-bot
 sudo cp deploy/config/config.example.yaml /etc/infra-bot/config.yaml
-sudo chmod 600 /etc/infra-bot/config.yaml
+sudo chown root:infra-bot /etc/infra-bot/config.yaml
+sudo chmod 640 /etc/infra-bot/config.yaml
 ```
 
 Adjust:
@@ -49,21 +76,21 @@ sudo systemctl enable --now infra-bot.service
 sudo systemctl enable --now infra-bot-update.timer
 ```
 
-Per host, adjust the timer calendar or config stagger to get:
+Per host, adjust the timer calendar to get:
 
 - server 1: `02:00`
 - server 2: `02:15`
 - server 3: `02:30`
 
-Version 1 keeps timer staggering as an operational deployment choice. The example timer ships with `02:00`.
+The default unit ships with `02:00`. The installer generates the host-specific `OnCalendar` value automatically.
 
 ## Commands
 
 ```bash
-infra-bot --config /etc/infra-bot/config.yaml run-bot
-infra-bot --config /etc/infra-bot/config.yaml run-update
-infra-bot --config /etc/infra-bot/config.yaml status
-infra-bot --config /etc/infra-bot/config.yaml pending-updates
+/opt/infra-bot/.venv/bin/infra-bot --config /etc/infra-bot/config.yaml run-bot
+/opt/infra-bot/.venv/bin/infra-bot --config /etc/infra-bot/config.yaml run-update
+/opt/infra-bot/.venv/bin/infra-bot --config /etc/infra-bot/config.yaml status
+/opt/infra-bot/.venv/bin/infra-bot --config /etc/infra-bot/config.yaml pending-updates
 ```
 
 ## Telegram commands
@@ -80,4 +107,4 @@ infra-bot --config /etc/infra-bot/config.yaml pending-updates
 - The same Telegram bot token can be reused across all servers.
 - In this local-agent design, commands target the individual server running the bot.
 - There is no central aggregation layer in this version.
-
+- The installer prefers `setfacl` for a root-owned `0600` config while still allowing the `infra-bot` service user to read it; if ACL tools are unavailable it falls back to `0640 root:infra-bot`.
