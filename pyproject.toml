@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "infra-bot"
+version = "0.1.0"
+description = "Local Ubuntu update agent with Telegram alerts"
+requires-python = ">=3.9"
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+infra-bot = "infra_bot.cli:main"
+
+[tool.setuptools]
+packages = ["infra_bot"]
