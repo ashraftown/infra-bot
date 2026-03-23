@@ -1,0 +1,11 @@
+[Unit]
+Description=Infra Bot weekly package update runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/infra-bot --config /etc/infra-bot/config.yaml run-update
+User=root
+Group=root
+

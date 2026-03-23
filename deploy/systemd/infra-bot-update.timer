@@ -1,0 +1,12 @@
+[Unit]
+Description=Infra Bot weekly update timer
+
+[Timer]
+OnCalendar=Sun *-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=0
+Unit=infra-bot-update.service
+
+[Install]
+WantedBy=timers.target
+
