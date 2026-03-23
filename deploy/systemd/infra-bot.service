@@ -5,12 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/infra-bot --config /etc/infra-bot/config.yaml run-bot
+ExecStart=/opt/infra-bot/.venv/bin/infra-bot --config /etc/infra-bot/config.yaml run-bot
 Restart=always
 RestartSec=5
 User=infra-bot
 Group=infra-bot
+WorkingDirectory=/opt/infra-bot/src
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
-
