@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import URLError
@@ -37,7 +38,7 @@ class TelegramClient:
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 body = response.read().decode("utf-8")
-        except URLError as exc:
+        except (URLError, TimeoutError, socket.timeout) as exc:
             raise TelegramError(str(exc)) from exc
 
         parsed = json.loads(body)
