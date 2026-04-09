@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from infra_bot.config import AppConfig
+from infra_bot.notifiers import Notifier
 from infra_bot.reboot import reboot_required, schedule_reboot
 from infra_bot.state import BotState, StateStore, utc_now_iso
-from infra_bot.telegram import TelegramClient
 
 
 UPGRADE_COUNT_RE = re.compile(r"(\d+)\s+upgraded")
@@ -56,22 +56,46 @@ def _parse_package_count(output: str) -> int | None:
     return None
 
 
+def _apply_notifier_errors(state: BotState, errors_by_provider: dict[str, list[str]]) -> bool:
+    changed = False
+
+    telegram_errors = errors_by_provider.get("telegram")
+    if telegram_errors:
+        state.last_telegram_error = "; ".join(telegram_errors)
+        changed = True
+
+    slack_errors = errors_by_provider.get("slack")
+    if slack_errors:
+        state.last_slack_error = "; ".join(slack_errors)
+        changed = True
+
+    return changed
+
+
+def _notify(notifiers: list[Notifier], text: str) -> dict[str, list[str]]:
+    errors: dict[str, list[str]] = {}
+    for notifier in notifiers:
+        provider_errors = notifier.send(text)
+        if provider_errors:
+            errors[notifier.name] = provider_errors
+    return errors
+
+
 def perform_update(
     config: AppConfig,
     store: StateStore,
-    telegram: TelegramClient | None = None,
+    notifiers: list[Notifier] | None = None,
     command_runner=run_command,
     reboot_scheduler=schedule_reboot,
 ) -> UpdateResult:
     state = store.load()
     started_at = utc_now_iso()
     started = time.monotonic()
-    chats = config.telegram.allowed_chat_ids
+    active_notifiers = notifiers or []
 
-    if telegram is not None:
-        errors = telegram.send_many(chats, f"[{config.server_name}] Update started at {started_at}")
-        if errors:
-            state.last_telegram_error = "; ".join(errors)
+    if active_notifiers:
+        errors_by_provider = _notify(active_notifiers, f"[{config.server_name}] Update started at {started_at}")
+        if _apply_notifier_errors(state, errors_by_provider):
             store.save(state)
 
     steps = [
@@ -102,10 +126,9 @@ def perform_update(
             state.last_run_error = error
             state.reboot_required = False
             store.save(state)
-            if telegram is not None:
-                errors = telegram.send_many(chats, f"[{config.server_name}] Update failed: {error}")
-                if errors:
-                    state.last_telegram_error = "; ".join(errors)
+            if active_notifiers:
+                errors_by_provider = _notify(active_notifiers, f"[{config.server_name}] Update failed: {error}")
+                if _apply_notifier_errors(state, errors_by_provider):
                     store.save(state)
             return UpdateResult("failed", started_at, duration, packages_changed, False, error, held_back)
         if cmd[0:3] == ["apt-get", "-y", "upgrade"] or cmd[0:3] == ["apt-get", "-y", "dist-upgrade"]:
@@ -126,18 +149,19 @@ def perform_update(
         state.last_reboot_scheduled_at = utc_now_iso()
     store.save(state)
 
-    if telegram is not None:
+    if active_notifiers:
         suffix = "reboot scheduled" if reboot_needed else "no reboot required"
-        errors = telegram.send_many(
-            chats,
+        errors_by_provider = _notify(
+            active_notifiers,
             f"[{config.server_name}] Update completed successfully in {duration}s. "
             f"Packages changed: {packages_changed if packages_changed is not None else 'unknown'}. {suffix}.",
         )
         if reboot_needed:
             pre_reboot = f"[{config.server_name}] Reboot scheduled in {config.reboot_policy.grace_minutes} minutes."
-            errors.extend(telegram.send_many(chats, pre_reboot))
-        if errors:
-            state.last_telegram_error = "; ".join(errors)
+            reboot_errors = _notify(active_notifiers, pre_reboot)
+            for provider, provider_errors in reboot_errors.items():
+                errors_by_provider.setdefault(provider, []).extend(provider_errors)
+        if _apply_notifier_errors(state, errors_by_provider):
             store.save(state)
 
     return UpdateResult("success", started_at, duration, packages_changed, reboot_needed, None, held_back)

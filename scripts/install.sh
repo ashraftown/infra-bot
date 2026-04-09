@@ -18,8 +18,12 @@ SYSTEMD_DIR="/etc/systemd/system"
 SERVICE_USER="infra-bot"
 SERVICE_GROUP="infra-bot"
 DEFAULT_SERVER_NAME="web-01"
+DEFAULT_MESSAGING_MODE="telegram"
 DEFAULT_ALLOWED_CHAT_IDS="123456789"
 DEFAULT_POLL_TIMEOUT="30"
+DEFAULT_SLACK_ALLOWED_USER_IDS="U12345678"
+DEFAULT_SLACK_CHANNEL_IDS="C12345678"
+DEFAULT_SLACK_COMMAND_NAME="/infra-bot"
 DEFAULT_SCHEDULE="Sun 02:00"
 DEFAULT_STAGGER="0"
 DEFAULT_USE_DIST_UPGRADE="true"
@@ -29,10 +33,16 @@ NON_INTERACTIVE=0
 FORCE=0
 
 SERVER_NAME=""
-BOT_TOKEN=""
+MESSAGING_MODE=""
+TELEGRAM_BOT_TOKEN=""
 ALLOWED_CHAT_IDS=""
-STAGGER_MINUTES=""
 POLL_TIMEOUT_SECONDS=""
+SLACK_BOT_TOKEN=""
+SLACK_APP_TOKEN=""
+SLACK_ALLOWED_USER_IDS=""
+SLACK_CHANNEL_IDS=""
+SLACK_COMMAND_NAME=""
+STAGGER_MINUTES=""
 USE_DIST_UPGRADE=""
 AUTOREMOVE=""
 REBOOT_GRACE_MINUTES=""
@@ -44,8 +54,15 @@ Usage: sudo ./scripts/install.sh [options]
 Options:
   --non-interactive
   --server-name VALUE
+  --messaging-mode telegram|slack|both
+  --telegram-bot-token VALUE
   --bot-token VALUE
   --allowed-chat-ids VALUE
+  --slack-bot-token VALUE
+  --slack-app-token VALUE
+  --slack-allowed-user-ids VALUE
+  --slack-channel-ids VALUE
+  --slack-command-name VALUE
   --stagger-minutes VALUE
   --force
   --help
@@ -63,12 +80,36 @@ parse_args() {
         SERVER_NAME="${2:-}"
         shift 2
         ;;
-      --bot-token)
-        BOT_TOKEN="${2:-}"
+      --messaging-mode)
+        MESSAGING_MODE="${2:-}"
+        shift 2
+        ;;
+      --telegram-bot-token|--bot-token)
+        TELEGRAM_BOT_TOKEN="${2:-}"
         shift 2
         ;;
       --allowed-chat-ids)
         ALLOWED_CHAT_IDS="${2:-}"
+        shift 2
+        ;;
+      --slack-bot-token)
+        SLACK_BOT_TOKEN="${2:-}"
+        shift 2
+        ;;
+      --slack-app-token)
+        SLACK_APP_TOKEN="${2:-}"
+        shift 2
+        ;;
+      --slack-allowed-user-ids)
+        SLACK_ALLOWED_USER_IDS="${2:-}"
+        shift 2
+        ;;
+      --slack-channel-ids)
+        SLACK_CHANNEL_IDS="${2:-}"
+        shift 2
+        ;;
+      --slack-command-name)
+        SLACK_COMMAND_NAME="${2:-}"
         shift 2
         ;;
       --stagger-minutes)
@@ -145,53 +186,117 @@ install_prereqs() {
   fi
 }
 
-read_existing_value() {
+read_existing_root_value() {
   local key="$1"
   local file="$2"
   [[ -f "$file" ]] || return 0
-  awk -F': ' -v wanted="$key" '$1 == wanted {gsub(/"/, "", $2); print $2; exit}' "$file"
+  awk -v wanted="$key" '
+    $0 ~ "^[^[:space:]][^:]*:[[:space:]]*" && $1 == wanted ":" {
+      line = $0
+      sub("^[^:]+:[[:space:]]*", "", line)
+      gsub(/"/, "", line)
+      print line
+      exit
+    }
+  ' "$file"
 }
 
-read_existing_chat_ids() {
-  local file="$1"
+read_existing_section_value() {
+  local section="$1"
+  local key="$2"
+  local file="$3"
   [[ -f "$file" ]] || return 0
-  awk '
-    /^  allowed_chat_ids:/ { in_list=1; next }
-    in_list && /^    - / {
-      gsub(/^    - /, "", $0)
-      values = values ? values "," $0 : $0
+  awk -v section="$section" -v wanted="$key" '
+    /^[^[:space:]].*:$/ {
+      in_section = ($0 == section ":")
       next
     }
-    in_list { exit }
-    END { print values }
+    in_section && /^[^[:space:]].*:/ { exit }
+    in_section && $0 ~ ("^  " wanted ":[[:space:]]*") {
+      line = $0
+      sub("^  " wanted ":[[:space:]]*", "", line)
+      gsub(/"/, "", line)
+      print line
+      exit
+    }
+  ' "$file"
+}
+
+read_existing_section_list() {
+  local section="$1"
+  local key="$2"
+  local file="$3"
+  [[ -f "$file" ]] || return 0
+  awk -v section="$section" -v wanted="$key" '
+    /^[^[:space:]].*:$/ {
+      if (in_section && $0 != section ":") {
+        exit
+      }
+      in_section = ($0 == section ":")
+      in_list = 0
+      next
+    }
+    in_section && $0 ~ ("^  " wanted ":$") {
+      in_list = 1
+      next
+    }
+    in_section && in_list && /^    - / {
+      line = $0
+      sub(/^    - /, "", line)
+      values = values ? values "," line : line
+      next
+    }
+    in_section && in_list {
+      exit
+    }
+    END {
+      print values
+    }
   ' "$file"
 }
 
 load_existing_defaults() {
+  local existing_mode=""
   if [[ ! -f "${CONFIG_PATH}" ]]; then
     return
   fi
-  DEFAULT_SERVER_NAME="$(read_existing_value "server_name" "${CONFIG_PATH}")"
+
+  DEFAULT_SERVER_NAME="$(read_existing_root_value "server_name" "${CONFIG_PATH}")"
   DEFAULT_SERVER_NAME="${DEFAULT_SERVER_NAME:-web-01}"
-  DEFAULT_ALLOWED_CHAT_IDS="$(read_existing_chat_ids "${CONFIG_PATH}")"
+
+  existing_mode="$(read_existing_section_value "messaging" "mode" "${CONFIG_PATH}")"
+  DEFAULT_MESSAGING_MODE="${existing_mode:-telegram}"
+
+  DEFAULT_ALLOWED_CHAT_IDS="$(read_existing_section_list "telegram" "allowed_chat_ids" "${CONFIG_PATH}")"
   DEFAULT_ALLOWED_CHAT_IDS="${DEFAULT_ALLOWED_CHAT_IDS:-123456789}"
-  DEFAULT_POLL_TIMEOUT="$(read_existing_value "  poll_timeout_seconds" "${CONFIG_PATH}")"
+  DEFAULT_POLL_TIMEOUT="$(read_existing_section_value "telegram" "poll_timeout_seconds" "${CONFIG_PATH}")"
   DEFAULT_POLL_TIMEOUT="${DEFAULT_POLL_TIMEOUT:-30}"
-  DEFAULT_SCHEDULE="$(read_existing_value "  schedule" "${CONFIG_PATH}")"
+  DEFAULT_TELEGRAM_BOT_TOKEN="$(read_existing_section_value "telegram" "bot_token" "${CONFIG_PATH}")"
+
+  DEFAULT_SLACK_ALLOWED_USER_IDS="$(read_existing_section_list "slack" "allowed_user_ids" "${CONFIG_PATH}")"
+  DEFAULT_SLACK_ALLOWED_USER_IDS="${DEFAULT_SLACK_ALLOWED_USER_IDS:-U12345678}"
+  DEFAULT_SLACK_CHANNEL_IDS="$(read_existing_section_list "slack" "notification_channel_ids" "${CONFIG_PATH}")"
+  DEFAULT_SLACK_CHANNEL_IDS="${DEFAULT_SLACK_CHANNEL_IDS:-C12345678}"
+  DEFAULT_SLACK_COMMAND_NAME="$(read_existing_section_value "slack" "command_name" "${CONFIG_PATH}")"
+  DEFAULT_SLACK_COMMAND_NAME="${DEFAULT_SLACK_COMMAND_NAME:-/infra-bot}"
+  DEFAULT_SLACK_BOT_TOKEN="$(read_existing_section_value "slack" "bot_token" "${CONFIG_PATH}")"
+  DEFAULT_SLACK_APP_TOKEN="$(read_existing_section_value "slack" "app_token" "${CONFIG_PATH}")"
+
+  DEFAULT_SCHEDULE="$(read_existing_section_value "update_policy" "schedule" "${CONFIG_PATH}")"
   DEFAULT_SCHEDULE="${DEFAULT_SCHEDULE:-Sun 02:00}"
-  DEFAULT_STAGGER="$(read_existing_value "  stagger_minutes" "${CONFIG_PATH}")"
+  DEFAULT_STAGGER="$(read_existing_section_value "update_policy" "stagger_minutes" "${CONFIG_PATH}")"
   DEFAULT_STAGGER="${DEFAULT_STAGGER:-0}"
-  DEFAULT_USE_DIST_UPGRADE="$(read_existing_value "  use_dist_upgrade" "${CONFIG_PATH}")"
+  DEFAULT_USE_DIST_UPGRADE="$(read_existing_section_value "update_policy" "use_dist_upgrade" "${CONFIG_PATH}")"
   DEFAULT_USE_DIST_UPGRADE="${DEFAULT_USE_DIST_UPGRADE:-true}"
-  DEFAULT_AUTOREMOVE="$(read_existing_value "  autoremove" "${CONFIG_PATH}")"
+  DEFAULT_AUTOREMOVE="$(read_existing_section_value "update_policy" "autoremove" "${CONFIG_PATH}")"
   DEFAULT_AUTOREMOVE="${DEFAULT_AUTOREMOVE:-true}"
-  DEFAULT_REBOOT_GRACE="$(read_existing_value "  grace_minutes" "${CONFIG_PATH}")"
+  DEFAULT_REBOOT_GRACE="$(read_existing_section_value "reboot_policy" "grace_minutes" "${CONFIG_PATH}")"
   DEFAULT_REBOOT_GRACE="${DEFAULT_REBOOT_GRACE:-5}"
-  DEFAULT_BOT_TOKEN="$(read_existing_value "  bot_token" "${CONFIG_PATH}")"
 }
 
 normalize_bool() {
-  local value="${1,,}"
+  local value
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$value" in
     y|yes|true|1) printf 'true\n' ;;
     n|no|false|0) printf 'false\n' ;;
@@ -199,9 +304,19 @@ normalize_bool() {
   esac
 }
 
+validate_messaging_mode() {
+  local value
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    telegram|slack|both) printf '%s\n' "$value" ;;
+    *) return 1 ;;
+  esac
+}
+
 validate_chat_ids() {
   local raw="$1"
   local normalized=""
+  local id=""
   IFS=',' read -r -a ids <<< "$raw"
   for id in "${ids[@]}"; do
     id="$(trim_spaces "$id")"
@@ -213,15 +328,57 @@ validate_chat_ids() {
   printf '%s\n' "$normalized"
 }
 
+validate_string_list() {
+  local raw="$1"
+  local normalized=""
+  local value=""
+  IFS=',' read -r -a values <<< "$raw"
+  for value in "${values[@]}"; do
+    value="$(trim_spaces "$value")"
+    [[ -n "$value" ]] || continue
+    normalized="${normalized:+${normalized},}${value}"
+  done
+  [[ -n "$normalized" ]] || return 1
+  printf '%s\n' "$normalized"
+}
+
+uses_telegram() {
+  [[ "${MESSAGING_MODE}" == "telegram" || "${MESSAGING_MODE}" == "both" ]]
+}
+
+uses_slack() {
+  [[ "${MESSAGING_MODE}" == "slack" || "${MESSAGING_MODE}" == "both" ]]
+}
+
 validate_required_inputs() {
   [[ -n "${SERVER_NAME}" ]] || die "Server name is required."
-  [[ -n "${BOT_TOKEN}" ]] || die "Telegram bot token is required."
-  ALLOWED_CHAT_IDS="$(validate_chat_ids "${ALLOWED_CHAT_IDS}")" || die "Allowed chat IDs must be comma-separated integers."
+  MESSAGING_MODE="$(validate_messaging_mode "${MESSAGING_MODE}")" || die "Messaging mode must be telegram, slack, or both."
   [[ "${STAGGER_MINUTES}" =~ ^[0-9]+$ ]] || die "Stagger minutes must be a non-negative integer."
-  [[ "${POLL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || die "Poll timeout must be a non-negative integer."
   [[ "${REBOOT_GRACE_MINUTES}" =~ ^[0-9]+$ ]] || die "Reboot grace minutes must be a non-negative integer."
   USE_DIST_UPGRADE="$(normalize_bool "${USE_DIST_UPGRADE}")" || die "Invalid dist-upgrade value."
   AUTOREMOVE="$(normalize_bool "${AUTOREMOVE}")" || die "Invalid autoremove value."
+
+  if uses_telegram; then
+    [[ -n "${TELEGRAM_BOT_TOKEN}" ]] || die "Telegram bot token is required."
+    ALLOWED_CHAT_IDS="$(validate_chat_ids "${ALLOWED_CHAT_IDS}")" || die "Allowed chat IDs must be comma-separated integers."
+    [[ "${POLL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || die "Poll timeout must be a non-negative integer."
+  else
+    ALLOWED_CHAT_IDS=""
+    POLL_TIMEOUT_SECONDS=""
+  fi
+
+  if uses_slack; then
+    [[ -n "${SLACK_BOT_TOKEN}" ]] || die "Slack bot token is required."
+    [[ -n "${SLACK_APP_TOKEN}" ]] || die "Slack app token is required."
+    SLACK_ALLOWED_USER_IDS="$(validate_string_list "${SLACK_ALLOWED_USER_IDS}")" || die "Allowed Slack user IDs must be comma-separated values."
+    SLACK_CHANNEL_IDS="$(validate_string_list "${SLACK_CHANNEL_IDS}")" || die "Slack channel IDs must be comma-separated values."
+    SLACK_COMMAND_NAME="${SLACK_COMMAND_NAME:-/infra-bot}"
+    [[ "${SLACK_COMMAND_NAME}" == /* ]] || die "Slack command name must start with '/'."
+  else
+    SLACK_ALLOWED_USER_IDS=""
+    SLACK_CHANNEL_IDS=""
+    SLACK_COMMAND_NAME=""
+  fi
 }
 
 collect_inputs() {
@@ -229,10 +386,16 @@ collect_inputs() {
 
   if [[ "${NON_INTERACTIVE}" -eq 1 ]]; then
     SERVER_NAME="${SERVER_NAME:-$DEFAULT_SERVER_NAME}"
-    BOT_TOKEN="${BOT_TOKEN:-${DEFAULT_BOT_TOKEN:-}}"
+    MESSAGING_MODE="${MESSAGING_MODE:-$DEFAULT_MESSAGING_MODE}"
+    TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${DEFAULT_TELEGRAM_BOT_TOKEN:-}}"
     ALLOWED_CHAT_IDS="${ALLOWED_CHAT_IDS:-$DEFAULT_ALLOWED_CHAT_IDS}"
-    STAGGER_MINUTES="${STAGGER_MINUTES:-$DEFAULT_STAGGER}"
     POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-$DEFAULT_POLL_TIMEOUT}"
+    SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-${DEFAULT_SLACK_BOT_TOKEN:-}}"
+    SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-${DEFAULT_SLACK_APP_TOKEN:-}}"
+    SLACK_ALLOWED_USER_IDS="${SLACK_ALLOWED_USER_IDS:-$DEFAULT_SLACK_ALLOWED_USER_IDS}"
+    SLACK_CHANNEL_IDS="${SLACK_CHANNEL_IDS:-$DEFAULT_SLACK_CHANNEL_IDS}"
+    SLACK_COMMAND_NAME="${SLACK_COMMAND_NAME:-$DEFAULT_SLACK_COMMAND_NAME}"
+    STAGGER_MINUTES="${STAGGER_MINUTES:-$DEFAULT_STAGGER}"
     USE_DIST_UPGRADE="${USE_DIST_UPGRADE:-$DEFAULT_USE_DIST_UPGRADE}"
     AUTOREMOVE="${AUTOREMOVE:-$DEFAULT_AUTOREMOVE}"
     REBOOT_GRACE_MINUTES="${REBOOT_GRACE_MINUTES:-$DEFAULT_REBOOT_GRACE}"
@@ -244,18 +407,70 @@ collect_inputs() {
     SERVER_NAME="$(prompt_with_default "Server name" "${DEFAULT_SERVER_NAME}")"
   done
 
-  while [[ -z "${BOT_TOKEN}" ]]; do
-    BOT_TOKEN="$(prompt_secret "Telegram bot token" "${DEFAULT_BOT_TOKEN:-}")"
-    [[ -n "${BOT_TOKEN}" ]] || warn "Telegram bot token is required."
-  done
-
   while true; do
-    ALLOWED_CHAT_IDS="$(prompt_with_default "Allowed chat IDs (comma separated)" "${DEFAULT_ALLOWED_CHAT_IDS}")"
-    if ALLOWED_CHAT_IDS="$(validate_chat_ids "${ALLOWED_CHAT_IDS}")"; then
+    MESSAGING_MODE="$(prompt_with_default "Messaging mode (telegram, slack, both)" "${DEFAULT_MESSAGING_MODE}")"
+    if MESSAGING_MODE="$(validate_messaging_mode "${MESSAGING_MODE}")"; then
       break
     fi
-    warn "Chat IDs must be comma-separated integers."
+    warn "Messaging mode must be telegram, slack, or both."
   done
+
+  if uses_telegram; then
+    while [[ -z "${TELEGRAM_BOT_TOKEN}" ]]; do
+      TELEGRAM_BOT_TOKEN="$(prompt_secret "Telegram bot token" "${DEFAULT_TELEGRAM_BOT_TOKEN:-}")"
+      [[ -n "${TELEGRAM_BOT_TOKEN}" ]] || warn "Telegram bot token is required."
+    done
+
+    while true; do
+      ALLOWED_CHAT_IDS="$(prompt_with_default "Allowed chat IDs (comma separated)" "${DEFAULT_ALLOWED_CHAT_IDS}")"
+      if ALLOWED_CHAT_IDS="$(validate_chat_ids "${ALLOWED_CHAT_IDS}")"; then
+        break
+      fi
+      warn "Chat IDs must be comma-separated integers."
+    done
+
+    while true; do
+      POLL_TIMEOUT_SECONDS="$(prompt_with_default "Telegram poll timeout seconds" "${DEFAULT_POLL_TIMEOUT}")"
+      [[ "${POLL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] && break
+      warn "Poll timeout must be a non-negative integer."
+    done
+  fi
+
+  if uses_slack; then
+    while [[ -z "${SLACK_BOT_TOKEN}" ]]; do
+      SLACK_BOT_TOKEN="$(prompt_secret "Slack bot token" "${DEFAULT_SLACK_BOT_TOKEN:-}")"
+      [[ -n "${SLACK_BOT_TOKEN}" ]] || warn "Slack bot token is required."
+    done
+
+    while [[ -z "${SLACK_APP_TOKEN}" ]]; do
+      SLACK_APP_TOKEN="$(prompt_secret "Slack app token" "${DEFAULT_SLACK_APP_TOKEN:-}")"
+      [[ -n "${SLACK_APP_TOKEN}" ]] || warn "Slack app token is required."
+    done
+
+    while true; do
+      SLACK_ALLOWED_USER_IDS="$(prompt_with_default "Allowed Slack user IDs (comma separated)" "${DEFAULT_SLACK_ALLOWED_USER_IDS}")"
+      if SLACK_ALLOWED_USER_IDS="$(validate_string_list "${SLACK_ALLOWED_USER_IDS}")"; then
+        break
+      fi
+      warn "Allowed Slack user IDs must be comma-separated values."
+    done
+
+    while true; do
+      SLACK_CHANNEL_IDS="$(prompt_with_default "Slack notification channel IDs (comma separated)" "${DEFAULT_SLACK_CHANNEL_IDS}")"
+      if SLACK_CHANNEL_IDS="$(validate_string_list "${SLACK_CHANNEL_IDS}")"; then
+        break
+      fi
+      warn "Slack channel IDs must be comma-separated values."
+    done
+
+    while true; do
+      SLACK_COMMAND_NAME="$(prompt_with_default "Slack slash command name" "${DEFAULT_SLACK_COMMAND_NAME}")"
+      if [[ -n "${SLACK_COMMAND_NAME}" && "${SLACK_COMMAND_NAME}" == /* ]]; then
+        break
+      fi
+      warn "Slack command name must start with '/'."
+    done
+  fi
 
   while true; do
     STAGGER_MINUTES="$(prompt_with_default "Weekly stagger minutes" "${DEFAULT_STAGGER}")"
@@ -267,12 +482,6 @@ collect_inputs() {
       break
     fi
     warn "Stagger minutes must be a non-negative integer."
-  done
-
-  while true; do
-    POLL_TIMEOUT_SECONDS="$(prompt_with_default "Telegram poll timeout seconds" "${DEFAULT_POLL_TIMEOUT}")"
-    [[ "${POLL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] && break
-    warn "Poll timeout must be a non-negative integer."
   done
 
   if prompt_yes_no "Use dist-upgrade?" "$( [[ "${DEFAULT_USE_DIST_UPGRADE}" == "true" ]] && printf 'Y' || printf 'N' )"; then
@@ -301,11 +510,30 @@ Install summary
   App home: ${APP_HOME}
   Config: ${CONFIG_PATH}
   Server name: ${SERVER_NAME}
-  Telegram bot token: $(mask_secret "${BOT_TOKEN}")
+  Messaging mode: ${MESSAGING_MODE}
+EOF
+
+  if uses_telegram; then
+    cat <<EOF
+  Telegram bot token: $(mask_secret "${TELEGRAM_BOT_TOKEN}")
   Allowed chat IDs: ${ALLOWED_CHAT_IDS}
+  Poll timeout seconds: ${POLL_TIMEOUT_SECONDS}
+EOF
+  fi
+
+  if uses_slack; then
+    cat <<EOF
+  Slack bot token: $(mask_secret "${SLACK_BOT_TOKEN}")
+  Slack app token: $(mask_secret "${SLACK_APP_TOKEN}")
+  Allowed Slack user IDs: ${SLACK_ALLOWED_USER_IDS}
+  Slack channel IDs: ${SLACK_CHANNEL_IDS}
+  Slack command name: ${SLACK_COMMAND_NAME}
+EOF
+  fi
+
+  cat <<EOF
   Schedule: ${DEFAULT_SCHEDULE}
   Stagger minutes: ${STAGGER_MINUTES}
-  Poll timeout seconds: ${POLL_TIMEOUT_SECONDS}
   Use dist-upgrade: ${USE_DIST_UPGRADE}
   Run autoremove --purge: ${AUTOREMOVE}
   Reboot grace minutes: ${REBOOT_GRACE_MINUTES}
@@ -357,20 +585,50 @@ install_python_package() {
   "${VENV_DIR}/bin/pip" install "${SRC_DIR}"
 }
 
-render_config() {
-  local chat_yaml=""
-  IFS=',' read -r -a ids <<< "${ALLOWED_CHAT_IDS}"
-  for id in "${ids[@]}"; do
-    id="$(trim_spaces "$id")"
-    chat_yaml="${chat_yaml}    - ${id}"$'\n'
+render_list_yaml() {
+  local csv="$1"
+  local indent="$2"
+  local value=""
+  local yaml=""
+  IFS=',' read -r -a values <<< "${csv}"
+  for value in "${values[@]}"; do
+    value="$(trim_spaces "$value")"
+    yaml="${yaml}${indent}- ${value}"$'\n'
   done
+  printf '%s' "$yaml"
+}
 
+render_config() {
   cat <<EOF
 server_name: ${SERVER_NAME}
+messaging:
+  mode: "${MESSAGING_MODE}"
+EOF
+
+  if uses_telegram; then
+    cat <<EOF
 telegram:
-  bot_token: "${BOT_TOKEN}"
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
   allowed_chat_ids:
-${chat_yaml}  poll_timeout_seconds: ${POLL_TIMEOUT_SECONDS}
+$(render_list_yaml "${ALLOWED_CHAT_IDS}" "    ")
+  poll_timeout_seconds: ${POLL_TIMEOUT_SECONDS}
+EOF
+  fi
+
+  if uses_slack; then
+    cat <<EOF
+slack:
+  bot_token: "${SLACK_BOT_TOKEN}"
+  app_token: "${SLACK_APP_TOKEN}"
+  allowed_user_ids:
+$(render_list_yaml "${SLACK_ALLOWED_USER_IDS}" "    ")
+  notification_channel_ids:
+$(render_list_yaml "${SLACK_CHANNEL_IDS}" "    ")
+  command_name: "${SLACK_COMMAND_NAME}"
+EOF
+  fi
+
+  cat <<EOF
 update_policy:
   schedule: "${DEFAULT_SCHEDULE}"
   stagger_minutes: ${STAGGER_MINUTES}
@@ -410,7 +668,7 @@ write_service_units() {
   local bot_bin="${VENV_DIR}/bin/infra-bot"
   cat > "${SYSTEMD_DIR}/infra-bot.service" <<EOF
 [Unit]
-Description=Infra Bot Telegram polling service
+Description=Infra Bot messaging service
 After=network-online.target
 Wants=network-online.target
 
@@ -496,4 +754,6 @@ main() {
   verify_install
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

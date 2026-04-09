@@ -1,9 +1,19 @@
 server_name: web-01
+messaging:
+  mode: "both"
 telegram:
   bot_token: "123456:token"
   allowed_chat_ids:
     - 123456789
   poll_timeout_seconds: 30
+slack:
+  bot_token: "xoxb-..."
+  app_token: "xapp-..."
+  allowed_user_ids:
+    - "U12345678"
+  notification_channel_ids:
+    - "C12345678"
+  command_name: "/infra-bot"
 update_policy:
   schedule: "Sun 02:00"
   stagger_minutes: 0
@@ -15,4 +25,3 @@ reboot_policy:
 paths:
   state_file: "/var/lib/infra-bot/state.json"
   reboot_marker_file: "/var/run/reboot-required"
-

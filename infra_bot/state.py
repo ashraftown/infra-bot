@@ -21,6 +21,7 @@ class BotState:
     reboot_required: bool = False
     last_reboot_scheduled_at: str | None = None
     last_telegram_error: str | None = None
+    last_slack_error: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -33,6 +34,7 @@ class BotState:
             "reboot_required": self.reboot_required,
             "last_reboot_scheduled_at": self.last_reboot_scheduled_at,
             "last_telegram_error": self.last_telegram_error,
+            "last_slack_error": self.last_slack_error,
         }
         payload.update(self.extra)
         return payload
@@ -48,6 +50,7 @@ class BotState:
             "reboot_required",
             "last_reboot_scheduled_at",
             "last_telegram_error",
+            "last_slack_error",
         }
         extra = {key: value for key, value in payload.items() if key not in known}
         return cls(
@@ -59,6 +62,7 @@ class BotState:
             reboot_required=bool(payload.get("reboot_required", False)),
             last_reboot_scheduled_at=payload.get("last_reboot_scheduled_at"),
             last_telegram_error=payload.get("last_telegram_error"),
+            last_slack_error=payload.get("last_slack_error"),
             extra=extra,
         )
 
