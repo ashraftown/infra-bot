@@ -52,14 +52,17 @@ prompt_yes_no() {
   local default_answer="${2:-Y}"
   local suffix="[Y/n]"
   local answer=""
+  local normalized_default=""
 
-  if [[ "${default_answer^^}" == "N" ]]; then
+  normalized_default="$(printf '%s' "${default_answer}" | tr '[:lower:]' '[:upper:]')"
+
+  if [[ "${normalized_default}" == "N" ]]; then
     suffix="[y/N]"
   fi
 
   read -r -p "$prompt $suffix: " answer
   answer="${answer:-$default_answer}"
-  case "${answer,,}" in
+  case "$(printf '%s' "${answer}" | tr '[:upper:]' '[:lower:]')" in
     y|yes) return 0 ;;
     n|no) return 1 ;;
     *) warn "Please answer yes or no."; prompt_yes_no "$prompt" "$default_answer"; return $? ;;
@@ -82,4 +85,3 @@ trim_spaces() {
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s\n' "$value"
 }
-

@@ -2,9 +2,9 @@
 
 `infra-bot` is a small Python service for Ubuntu 24.04 hosts that:
 
-- polls Telegram for read-only bot commands
+- polls Telegram and/or Slack for read-only bot commands
 - applies weekly `apt` upgrades locally on each server
-- alerts configured Telegram chats on start, success, failure, and reboot scheduling
+- alerts configured Telegram chats and/or Slack channels on start, success, failure, and reboot scheduling
 - stores operational state in a local JSON file
 
 ## Project layout
@@ -26,10 +26,16 @@ sudo ./scripts/install.sh
 The installer:
 
 - validates the host environment
-- prompts for Telegram and host-specific settings
+- prompts for messaging and host-specific settings
 - installs the app into `/opt/infra-bot/.venv`
 - writes `/etc/infra-bot/config.yaml`
 - installs and enables the `systemd` service and timer
+
+Messaging modes:
+
+- `telegram`: Telegram commands and Telegram notifications
+- `slack`: Slack slash-command support and Slack notifications
+- `both`: Telegram and Slack together
 
 For the three-server rollout, use stagger values:
 
@@ -60,8 +66,9 @@ sudo chmod 640 /etc/infra-bot/config.yaml
 Adjust:
 
 - `server_name`
-- `telegram.bot_token`
-- `telegram.allowed_chat_ids`
+- `messaging.mode`
+- `telegram.bot_token` and `telegram.allowed_chat_ids` when Telegram is enabled
+- `slack.bot_token`, `slack.app_token`, `slack.allowed_user_ids`, and `slack.notification_channel_ids` when Slack is enabled
 - `update_policy.stagger_minutes`
 
 ## Systemd
@@ -93,7 +100,7 @@ The default unit ships with `02:00`. The installer generates the host-specific `
 /opt/infra-bot/.venv/bin/infra-bot --config /etc/infra-bot/config.yaml pending-updates
 ```
 
-## Telegram commands
+## Commands
 
 - `/start`
 - `/status`
@@ -102,9 +109,38 @@ The default unit ships with `02:00`. The installer generates the host-specific `
 - `/reboot`
 - `/help`
 
+Telegram uses those commands directly.
+
+Slack uses a single slash command, default `/infra-bot`, with the command name as the first argument:
+
+- `/infra-bot status`
+- `/infra-bot updates`
+- `/infra-bot lastrun`
+- `/infra-bot reboot`
+- `/infra-bot help`
+
+## Slack setup
+
+For Slack mode, create and install a Slack app with:
+
+- a bot token (`xoxb-...`)
+- an app-level token (`xapp-...`)
+- Socket Mode enabled
+- a slash command, default `/infra-bot`
+- permissions sufficient to post messages and receive slash commands
+
+The installer prompts for:
+
+- `slack.bot_token`
+- `slack.app_token`
+- `slack.allowed_user_ids`
+- `slack.notification_channel_ids`
+- `slack.command_name`
+
 ## Notes
 
 - The same Telegram bot token can be reused across all servers.
+- Slack support uses Socket Mode, so no public inbound HTTP endpoint is required per host.
 - In this local-agent design, commands target the individual server running the bot.
 - There is no central aggregation layer in this version.
 - The installer prefers `setfacl` for a root-owned `0600` config while still allowing the `infra-bot` service user to read it; if ACL tools are unavailable it falls back to `0640 root:infra-bot`.
