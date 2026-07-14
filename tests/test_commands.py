@@ -29,8 +29,14 @@ def test_help_command(tmp_path) -> None:
 def test_last_run_command(tmp_path) -> None:
     config = build_config(tmp_path)
     store = StateStore(config.paths.state_file)
-    state = BotState(last_run_at="2026-03-23T00:00:00+00:00", last_run_status="success")
+    state = BotState(
+        last_run_at="2026-03-23T00:00:00+00:00",
+        last_run_status="success",
+        last_run_packages_changed=1,
+        last_run_package_details=["openssl: 1.0 → 1.1"],
+    )
     store.save(state)
     response = handle_command("/lastrun", config, store)
     assert "2026-03-23T00:00:00+00:00" in response
     assert "success" in response
+    assert "openssl: 1.0 → 1.1" in response

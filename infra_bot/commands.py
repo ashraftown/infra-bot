@@ -6,7 +6,7 @@ import subprocess
 from infra_bot.config import AppConfig
 from infra_bot.reboot import reboot_required
 from infra_bot.state import StateStore
-from infra_bot.updater import count_pending_updates
+from infra_bot.updater import MAX_PACKAGE_LINES_IN_COMMAND, format_package_lines, list_upgradable_packages
 
 
 def _read_os_release() -> str:
@@ -52,7 +52,7 @@ def handle_command(text: str, config: AppConfig, store: StateStore) -> str:
         return f"{config.server_name}\n{render_help()}"
 
     if command == "/status":
-        pending_count, _ = count_pending_updates()
+        pending_count = len(list_upgradable_packages())
         os_name = _read_os_release()
         return (
             f"Server: {config.server_name}\n"
@@ -65,16 +65,21 @@ def handle_command(text: str, config: AppConfig, store: StateStore) -> str:
         )
 
     if command == "/updates":
-        pending_count, names = count_pending_updates()
-        names_text = ", ".join(names) if names else "none"
-        return f"Pending updates: {pending_count}\nPackages: {names_text}"
+        packages = list_upgradable_packages()
+        if not packages:
+            return "Pending updates: 0\nPackages: none"
+        lines = format_package_lines(packages, max_lines=MAX_PACKAGE_LINES_IN_COMMAND)
+        return f"Pending updates: {len(packages)}\n" + "\n".join(lines)
 
     if command == "/lastrun":
+        details = state.last_run_package_details or []
+        details_text = "\n".join(details) if details else "none"
         return (
             f"Last run: {state.last_run_at or 'never'}\n"
             f"Status: {state.last_run_status or 'n/a'}\n"
             f"Duration: {state.last_run_duration_seconds if state.last_run_duration_seconds is not None else 'n/a'}\n"
             f"Packages changed: {state.last_run_packages_changed if state.last_run_packages_changed is not None else 'unknown'}\n"
+            f"Packages:\n{details_text}\n"
             f"Error: {state.last_run_error or 'none'}"
         )
 

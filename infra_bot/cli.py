@@ -12,7 +12,7 @@ from infra_bot.notifiers import SlackNotifier, TelegramNotifier
 from infra_bot.slack import SlackClient, run_slack_bot
 from infra_bot.state import StateStore
 from infra_bot.telegram import TelegramClient
-from infra_bot.updater import count_pending_updates, perform_update
+from infra_bot.updater import list_upgradable_packages, perform_update
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,8 +76,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "pending-updates":
-        pending_count, names = count_pending_updates()
-        print(json.dumps({"count": pending_count, "packages": names}, indent=2))
+        packages = list_upgradable_packages()
+        print(
+            json.dumps(
+                {
+                    "count": len(packages),
+                    "packages": [
+                        {
+                            "name": package.name,
+                            "from": package.old_version,
+                            "to": package.new_version,
+                            "summary": package.format_line(),
+                        }
+                        for package in packages
+                    ],
+                },
+                indent=2,
+            )
+        )
         return 0
 
     parser.print_help()

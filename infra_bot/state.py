@@ -17,6 +17,7 @@ class BotState:
     last_run_status: str | None = None
     last_run_duration_seconds: int | None = None
     last_run_packages_changed: int | None = None
+    last_run_package_details: list[str] = field(default_factory=list)
     last_run_error: str | None = None
     reboot_required: bool = False
     last_reboot_scheduled_at: str | None = None
@@ -30,6 +31,7 @@ class BotState:
             "last_run_status": self.last_run_status,
             "last_run_duration_seconds": self.last_run_duration_seconds,
             "last_run_packages_changed": self.last_run_packages_changed,
+            "last_run_package_details": list(self.last_run_package_details),
             "last_run_error": self.last_run_error,
             "reboot_required": self.reboot_required,
             "last_reboot_scheduled_at": self.last_reboot_scheduled_at,
@@ -46,18 +48,24 @@ class BotState:
             "last_run_status",
             "last_run_duration_seconds",
             "last_run_packages_changed",
+            "last_run_package_details",
             "last_run_error",
             "reboot_required",
             "last_reboot_scheduled_at",
             "last_telegram_error",
             "last_slack_error",
         }
+        raw_details = payload.get("last_run_package_details") or []
+        if not isinstance(raw_details, list):
+            raw_details = []
+        package_details = [str(item) for item in raw_details]
         extra = {key: value for key, value in payload.items() if key not in known}
         return cls(
             last_run_at=payload.get("last_run_at"),
             last_run_status=payload.get("last_run_status"),
             last_run_duration_seconds=payload.get("last_run_duration_seconds"),
             last_run_packages_changed=payload.get("last_run_packages_changed"),
+            last_run_package_details=package_details,
             last_run_error=payload.get("last_run_error"),
             reboot_required=bool(payload.get("reboot_required", False)),
             last_reboot_scheduled_at=payload.get("last_reboot_scheduled_at"),
