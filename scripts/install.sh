@@ -34,7 +34,8 @@ DEFAULT_AUTOREMOVE="true"
 DEFAULT_REBOOT_GRACE="5"
 DEFAULT_REPO_SLUG="${INFRA_BOT_REPO_SLUG:-ashraftown/infra-bot}"
 DEFAULT_REPO_REF="${INFRA_BOT_REF:-main}"
-DEFAULT_REPO_URL="${INFRA_BOT_REPO_URL:-}"
+# Public HTTPS by default so hosts can self-update without tokens or deploy keys.
+DEFAULT_REPO_URL="${INFRA_BOT_REPO_URL:-https://github.com/ashraftown/infra-bot.git}"
 NON_INTERACTIVE=0
 FORCE=0
 UPDATE_MODE=0
@@ -594,15 +595,39 @@ create_user_and_dirs() {
   install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${STATE_DIR}"
 }
 
+normalize_github_https_url() {
+  local url="$1"
+  local owner=""
+  local repo=""
+
+  if [[ "${url}" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    owner="${BASH_REMATCH[1]}"
+    repo="${BASH_REMATCH[2]}"
+    printf 'https://github.com/%s/%s.git\n' "${owner}" "${repo}"
+    return 0
+  fi
+  printf '%s\n' "${url}"
+}
+
 detect_repo_metadata() {
-  if [[ -z "${DEFAULT_REPO_URL}" ]] && command_exists git && [[ -d "${REPO_ROOT}/.git" ]]; then
-    DEFAULT_REPO_URL="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
+  local detected_url=""
+
+  if command_exists git && [[ -d "${REPO_ROOT}/.git" ]]; then
+    detected_url="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
   fi
 
-  if [[ -z "${DEFAULT_REPO_SLUG}" || "${DEFAULT_REPO_SLUG}" == "ashraftown/infra-bot" ]]; then
-    if [[ "${DEFAULT_REPO_URL}" =~ github.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+  if [[ -n "${detected_url}" ]]; then
+    if [[ "${detected_url}" =~ github.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
       DEFAULT_REPO_SLUG="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
     fi
+    # Always prefer public HTTPS for self-update, even if origin is SSH.
+    DEFAULT_REPO_URL="$(normalize_github_https_url "${detected_url}")"
+  fi
+
+  if [[ -z "${DEFAULT_REPO_URL}" ]]; then
+    DEFAULT_REPO_URL="https://github.com/${DEFAULT_REPO_SLUG}.git"
+  else
+    DEFAULT_REPO_URL="$(normalize_github_https_url "${DEFAULT_REPO_URL}")"
   fi
 
   if command_exists git && [[ -d "${REPO_ROOT}/.git" ]]; then
@@ -616,24 +641,15 @@ detect_repo_metadata() {
 
 write_install_conf() {
   detect_repo_metadata
-  local token_line=""
-  # Persist token only when explicitly provided via env for unattended host updates.
-  if [[ -n "${INFRA_BOT_GITHUB_TOKEN:-}" ]]; then
-    token_line="GITHUB_TOKEN_FROM_CONF=\"${INFRA_BOT_GITHUB_TOKEN}\""
-  elif [[ -f "${INSTALL_CONF}" ]]; then
-    # Preserve previously stored token when re-running install/update.
-    token_line="$(awk -F= '/^GITHUB_TOKEN_FROM_CONF=/{print; exit}' "${INSTALL_CONF}" || true)"
-  fi
-
+  # Public HTTPS only. Do not persist GitHub tokens in install.conf.
   cat > "${INSTALL_CONF}" <<EOF
 # Managed by infra-bot installer. Used by: sudo infra-bot-update
 REPO_SLUG="${DEFAULT_REPO_SLUG}"
 REPO_REF="${DEFAULT_REPO_REF}"
 REPO_URL="${DEFAULT_REPO_URL}"
-${token_line}
 EOF
   chown root:root "${INSTALL_CONF}"
-  chmod 0600 "${INSTALL_CONF}"
+  chmod 0644 "${INSTALL_CONF}"
 }
 
 install_update_helper() {

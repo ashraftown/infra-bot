@@ -33,7 +33,7 @@ CONFIG_DIR="/etc/infra-bot"
 INSTALL_CONF="${CONFIG_DIR}/install.conf"
 DEFAULT_REPO_SLUG="${INFRA_BOT_REPO_SLUG:-ashraftown/infra-bot}"
 DEFAULT_REPO_REF="${INFRA_BOT_REF:-main}"
-DEFAULT_REPO_URL="${INFRA_BOT_REPO_URL:-}"
+DEFAULT_REPO_URL="${INFRA_BOT_REPO_URL:-https://github.com/ashraftown/infra-bot.git}"
 
 MODE="install"
 LOCAL_ONLY=0
@@ -54,18 +54,27 @@ Options:
   --repo-slug OWNER/REPO  GitHub repo slug (default: ashraftown/infra-bot)
   --ref REF               Git ref/branch/tag (default: main)
   --repo-url URL          git clone URL (SSH or HTTPS)
-  --token TOKEN           GitHub token for private repo tarball download
+  --token TOKEN           Optional GitHub token (env-only; not stored on disk)
   --help
 
 Any additional options are passed through to scripts/install.sh
 (for example --server-name, --non-interactive, --stagger-minutes).
 
 Environment:
-  GITHUB_TOKEN / INFRA_BOT_GITHUB_TOKEN
   INFRA_BOT_REPO_SLUG
   INFRA_BOT_REF
   INFRA_BOT_REPO_URL
+  GITHUB_TOKEN / INFRA_BOT_GITHUB_TOKEN   # optional; never written to install.conf
 EOF
+}
+
+normalize_github_https_url() {
+  local url="$1"
+  if [[ "${url}" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    printf 'https://github.com/%s/%s.git\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  printf '%s\n' "${url}"
 }
 
 load_install_conf() {
@@ -74,12 +83,12 @@ load_install_conf() {
   source "${INSTALL_CONF}"
   DEFAULT_REPO_SLUG="${REPO_SLUG:-$DEFAULT_REPO_SLUG}"
   DEFAULT_REPO_REF="${REPO_REF:-$DEFAULT_REPO_REF}"
-  DEFAULT_REPO_URL="${REPO_URL:-$DEFAULT_REPO_URL}"
+  if [[ -n "${REPO_URL:-}" ]]; then
+    DEFAULT_REPO_URL="$(normalize_github_https_url "${REPO_URL}")"
+  fi
+  # Intentionally ignore legacy GITHUB_TOKEN_FROM_CONF; tokens are not persisted.
   if [[ -z "${GITHUB_TOKEN:-}" && -n "${INFRA_BOT_GITHUB_TOKEN:-}" ]]; then
     GITHUB_TOKEN="${INFRA_BOT_GITHUB_TOKEN}"
-  fi
-  if [[ -z "${GITHUB_TOKEN:-}" && -n "${GITHUB_TOKEN_FROM_CONF:-}" ]]; then
-    GITHUB_TOKEN="${GITHUB_TOKEN_FROM_CONF}"
   fi
 }
 
@@ -211,14 +220,14 @@ download_github_tarball() {
   local token="${GITHUB_TOKEN:-${INFRA_BOT_GITHUB_TOKEN:-}}"
   local url="https://api.github.com/repos/${slug}/tarball/${ref}"
   local archive="${dest_dir}.tgz"
-  local curl_args=(-fsSL -H "Accept: application/vnd.github+json" -L)
+  local curl_args=(-fsSL -H "Accept: application/vnd.github+json" -L -H "X-GitHub-Api-Version: 2022-11-28")
 
-  [[ -n "${token}" ]] || return 1
   command_exists curl || return 1
 
   log "Downloading ${slug}@${ref}"
-  curl_args+=(-H "Authorization: Bearer ${token}")
-  curl_args+=(-H "X-GitHub-Api-Version: 2022-11-28")
+  if [[ -n "${token}" ]]; then
+    curl_args+=(-H "Authorization: Bearer ${token}")
+  fi
   if ! curl "${curl_args[@]}" "${url}" -o "${archive}"; then
     warn "GitHub tarball download failed for ${slug}@${ref}"
     rm -f "${archive}"
@@ -311,21 +320,25 @@ refresh_user_checkout() {
 
 fetch_source() {
   local dest="$1"
+  local https_url="https://github.com/${DEFAULT_REPO_SLUG}.git"
 
+  if [[ -n "${DEFAULT_REPO_URL}" ]]; then
+    DEFAULT_REPO_URL="$(normalize_github_https_url "${DEFAULT_REPO_URL}")"
+    https_url="${DEFAULT_REPO_URL}"
+  fi
+
+  # Prefer public HTTPS clone (no token required when the repo is public).
+  if clone_git_repo "${https_url}" "${DEFAULT_REPO_REF}" "${dest}"; then
+    return 0
+  fi
+
+  # Codeload / API tarball also works for public repos without auth.
   if download_github_tarball "${DEFAULT_REPO_SLUG}" "${DEFAULT_REPO_REF}" "${dest}"; then
     return 0
   fi
 
-  if [[ -n "${DEFAULT_REPO_URL}" ]] && clone_git_repo "${DEFAULT_REPO_URL}" "${DEFAULT_REPO_REF}" "${dest}"; then
-    return 0
-  fi
-
-  # Common SSH default when only the slug is known.
+  # Optional SSH fallback when HTTPS is blocked but deploy keys exist.
   if clone_git_repo "git@github.com:${DEFAULT_REPO_SLUG}.git" "${DEFAULT_REPO_REF}" "${dest}"; then
-    return 0
-  fi
-
-  if clone_git_repo "https://github.com/${DEFAULT_REPO_SLUG}.git" "${DEFAULT_REPO_REF}" "${dest}"; then
     return 0
   fi
 
@@ -336,22 +349,20 @@ auth_help_message() {
   cat <<EOF
 Could not download ${DEFAULT_REPO_SLUG}@${DEFAULT_REPO_REF}.
 
-Private GitHub access is required. Pick one:
+Try:
 
-  1) GitHub token (recommended for sudo infra-bot-update as root):
-       sudo env INFRA_BOT_GITHUB_TOKEN=ghp_xxx infra-bot-update
+  1) Ensure the host can reach GitHub over HTTPS:
+       curl -I https://github.com/${DEFAULT_REPO_SLUG}
 
-  2) SSH key available to the user who runs sudo (keys in ~/.ssh):
-       ssh -T git@github.com    # must work as that user first
-       sudo infra-bot-update
+  2) Install git/curl if missing:
+       sudo apt-get install -y git curl
 
-  3) Local checkout (works offline / without root GitHub auth):
+  3) Local checkout fallback:
        cd ~/infra-bot && git pull
        sudo ./scripts/install.sh --update
-       # or: sudo infra-bot-update --local   (from inside the checkout)
 
-  4) Host missing git entirely:
-       sudo apt-get install -y git
+  4) Optional token (env only, not stored) for private forks / rate limits:
+       sudo env INFRA_BOT_GITHUB_TOKEN=ghp_xxx infra-bot-update
 EOF
 }
 
