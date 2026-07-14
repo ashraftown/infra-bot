@@ -141,13 +141,53 @@ cleanup() {
   fi
 }
 
+is_repo_tree() {
+  local candidate="$1"
+  [[ -n "${candidate}" \
+    && -f "${candidate}/pyproject.toml" \
+    && -d "${candidate}/infra_bot" \
+    && -f "${candidate}/scripts/install.sh" ]]
+}
+
 local_repo_root() {
   local candidate="${SCRIPT_DIR}/.."
   candidate="$(cd "${candidate}" && pwd)"
-  if [[ -f "${candidate}/pyproject.toml" && -d "${candidate}/infra_bot" && -f "${candidate}/scripts/install.sh" ]]; then
+  if is_repo_tree "${candidate}"; then
     printf '%s\n' "${candidate}"
     return 0
   fi
+  return 1
+}
+
+invoking_user() {
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    printf '%s\n' "${SUDO_USER}"
+    return 0
+  fi
+  return 1
+}
+
+user_home() {
+  local user="$1"
+  getent passwd "${user}" | awk -F: '{print $6}'
+}
+
+find_user_checkout() {
+  local user=""
+  local home=""
+  local candidate=""
+  user="$(invoking_user)" || return 1
+  home="$(user_home "${user}")"
+  [[ -n "${home}" ]] || return 1
+  for candidate in \
+    "${home}/infra-bot" \
+    "${home}/codebase/infra-bot" \
+    "${home}/src/infra-bot"; do
+    if is_repo_tree "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -156,7 +196,12 @@ ensure_fetch_tools() {
   if command_exists curl || command_exists git; then
     return 0
   fi
-  die "Need curl and/or git to download infra-bot source."
+  die "Need curl and/or git to download infra-bot source. On Ubuntu: sudo apt-get install -y git curl"
+}
+
+source_tree_ok() {
+  local dest_dir="$1"
+  is_repo_tree "${dest_dir}"
 }
 
 download_github_tarball() {
@@ -174,11 +219,33 @@ download_github_tarball() {
   log "Downloading ${slug}@${ref} via GitHub API"
   curl_args+=(-H "Authorization: Bearer ${token}")
   curl_args+=(-H "X-GitHub-Api-Version: 2022-11-28")
-  curl "${curl_args[@]}" "${url}" -o "${archive}"
+  if ! curl "${curl_args[@]}" "${url}" -o "${archive}"; then
+    warn "GitHub tarball download failed for ${slug}@${ref}"
+    rm -f "${archive}"
+    return 1
+  fi
 
   mkdir -p "${dest_dir}"
-  tar -xzf "${archive}" -C "${dest_dir}" --strip-components=1
+  if ! tar -xzf "${archive}" -C "${dest_dir}" --strip-components=1; then
+    warn "Failed to extract GitHub tarball"
+    rm -rf "${dest_dir}" "${archive}"
+    mkdir -p "${dest_dir}"
+    return 1
+  fi
   rm -f "${archive}"
+  source_tree_ok "${dest_dir}"
+}
+
+# Run a git command either as root or as the sudo-invoking user so their
+# SSH keys / known_hosts are used for private GitHub access.
+run_git() {
+  local user=""
+  if user="$(invoking_user)" && [[ "$(id -u)" -eq 0 ]]; then
+    # -H sets HOME so ssh finds /home/<user>/.ssh (root's keys usually lack GitHub access).
+    sudo -u "${user}" -H git "$@"
+    return $?
+  fi
+  git "$@"
 }
 
 clone_git_repo() {
@@ -188,13 +255,58 @@ clone_git_repo() {
 
   command_exists git || return 1
   [[ -n "${url}" ]] || return 1
+  rm -rf "${dest_dir}"
 
   log "Cloning ${url} (ref ${ref})"
-  git clone --depth 1 --branch "${ref}" "${url}" "${dest_dir}" 2>/dev/null \
-    || git clone --depth 1 "${url}" "${dest_dir}"
-  if [[ -d "${dest_dir}/.git" ]]; then
-    git -C "${dest_dir}" checkout "${ref}" >/dev/null 2>&1 || true
+  if run_git clone --depth 1 --branch "${ref}" "${url}" "${dest_dir}"; then
+    :
+  elif run_git clone --depth 1 "${url}" "${dest_dir}"; then
+    run_git -C "${dest_dir}" checkout "${ref}" >/dev/null 2>&1 || true
+  else
+    warn "git clone failed for ${url}"
+    rm -rf "${dest_dir}"
+    mkdir -p "${dest_dir}"
+    return 1
   fi
+
+  if ! source_tree_ok "${dest_dir}"; then
+    warn "Clone at ${dest_dir} is missing expected infra-bot files"
+    rm -rf "${dest_dir}"
+    mkdir -p "${dest_dir}"
+    return 1
+  fi
+  return 0
+}
+
+refresh_user_checkout() {
+  local checkout="$1"
+  local user=""
+  user="$(invoking_user)" || true
+
+  if [[ ! -d "${checkout}/.git" ]]; then
+    log "Using existing checkout at ${checkout} (not a git repo; no pull)"
+    return 0
+  fi
+  if ! command_exists git; then
+    warn "git is not installed; using checkout as-is at ${checkout}"
+    return 0
+  fi
+
+  log "Refreshing local checkout at ${checkout}"
+  if run_git -C "${checkout}" fetch --depth 1 origin "${DEFAULT_REPO_REF}"; then
+    run_git -C "${checkout}" checkout "${DEFAULT_REPO_REF}" >/dev/null 2>&1 || true
+    run_git -C "${checkout}" pull --ff-only origin "${DEFAULT_REPO_REF}" >/dev/null 2>&1 \
+      || run_git -C "${checkout}" reset --hard "origin/${DEFAULT_REPO_REF}" >/dev/null 2>&1 \
+      || warn "Could not fast-forward ${checkout}; installing whatever is currently checked out"
+  else
+    warn "git fetch failed for ${checkout}; installing whatever is currently checked out"
+  fi
+
+  # Ensure root-run installer can read files owned by the invoking user.
+  if [[ "$(id -u)" -eq 0 && -n "${user}" ]]; then
+    chmod -R a+rX "${checkout}" 2>/dev/null || true
+  fi
+  source_tree_ok "${checkout}"
 }
 
 fetch_source() {
@@ -217,15 +329,44 @@ fetch_source() {
     return 0
   fi
 
-  die "Could not download ${DEFAULT_REPO_SLUG}@${DEFAULT_REPO_REF}. Set GITHUB_TOKEN for private repos, or INFRA_BOT_REPO_URL for git clone, or pass --local from a checkout."
+  return 1
+}
+
+auth_help_message() {
+  cat <<EOF
+Could not download ${DEFAULT_REPO_SLUG}@${DEFAULT_REPO_REF}.
+
+Private GitHub access is required. Pick one:
+
+  1) GitHub token (recommended for sudo infra-bot-update as root):
+       sudo env INFRA_BOT_GITHUB_TOKEN=ghp_xxx infra-bot-update
+
+  2) SSH key available to the user who runs sudo (keys in ~/.ssh):
+       ssh -T git@github.com    # must work as that user first
+       sudo infra-bot-update
+
+  3) Local checkout (works offline / without root GitHub auth):
+       cd ~/infra-bot && git pull
+       sudo ./scripts/install.sh --update
+       # or: sudo infra-bot-update --local   (from inside the checkout)
+
+  4) Host missing git entirely:
+       sudo apt-get install -y git
+EOF
 }
 
 resolve_source_tree() {
   local local_root=""
+  local user_checkout=""
 
   if [[ "${LOCAL_ONLY}" -eq 1 ]]; then
-    local_root="$(local_repo_root)" || die "--local requires running from an infra-bot checkout."
-    WORKDIR="${local_root}"
+    if local_root="$(local_repo_root)"; then
+      WORKDIR="${local_root}"
+    elif user_checkout="$(find_user_checkout)"; then
+      WORKDIR="${user_checkout}"
+    else
+      die "--local requires an infra-bot checkout next to this script or in ~/infra-bot"
+    fi
     CLEANUP_WORKDIR=0
     log "Using local source at ${WORKDIR}"
     return
@@ -243,8 +384,26 @@ resolve_source_tree() {
   ensure_fetch_tools
   WORKDIR="$(mktemp -d /tmp/infra-bot-src.XXXXXX)"
   CLEANUP_WORKDIR=1
-  fetch_source "${WORKDIR}"
-  log "Fetched source into ${WORKDIR}"
+
+  if fetch_source "${WORKDIR}"; then
+    log "Fetched source into ${WORKDIR}"
+    return
+  fi
+
+  # Fall back to the invoking user's existing checkout (common on these hosts).
+  if user_checkout="$(find_user_checkout)"; then
+    rm -rf "${WORKDIR}"
+    CLEANUP_WORKDIR=0
+    WORKDIR="${user_checkout}"
+    refresh_user_checkout "${WORKDIR}" || true
+    if source_tree_ok "${WORKDIR}"; then
+      log "Using fallback local checkout at ${WORKDIR}"
+      return
+    fi
+  fi
+
+  auth_help_message >&2
+  die "Update aborted: no usable source tree."
 }
 
 run_installer() {
