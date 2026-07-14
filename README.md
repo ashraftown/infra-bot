@@ -18,8 +18,8 @@ curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash
 
 ## Features
 
-| | |
-|---|---|
+| Feature | Description |
+|---------|-------------|
 | **Weekly upgrades** | `apt-get update` / `upgrade` / optional `dist-upgrade` + `autoremove` |
 | **Chat alerts** | Start, success (with package versions), failure, reboot scheduling |
 | **Messaging** | Telegram, Slack, or both |
@@ -256,8 +256,8 @@ The default timer is Sunday `02:00`. Prefer the installer, which sets `OnCalenda
 
 ## License & contributing
 
-| | |
-|---|---|
+| Resource | Link |
+|----------|------|
 | **License** | [MIT](LICENSE) |
 | **Contributing** | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | **Security** | [SECURITY.md](SECURITY.md) |
