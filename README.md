@@ -43,11 +43,14 @@ sudo infra-bot-update
 
 That command:
 
-1. downloads the configured ref of this repo (GitHub API tarball or git clone)
-2. reinstalls the package into `/opt/infra-bot/.venv`
+1. downloads the configured ref into a temporary directory (for example `/tmp/infra-bot-src.*`)
+2. reinstalls the package into `/opt/infra-bot/.venv` and `/opt/infra-bot/src`
 3. refreshes systemd units
 4. restarts services
 5. **keeps** `/etc/infra-bot/config.yaml` unchanged
+6. deletes the temporary download when finished
+
+You do **not** need a permanent `~/infra-bot` checkout on each host. After `sudo infra-bot-update` works once, you can remove `~/infra-bot` if you want.
 
 Because this GitHub repo is private, hosts need one of:
 

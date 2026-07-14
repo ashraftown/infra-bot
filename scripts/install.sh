@@ -655,6 +655,9 @@ EOF
 }
 
 sync_source_tree() {
+  if [[ "${UPDATE_MODE}" -eq 1 ]]; then
+    log "Syncing application files"
+  fi
   if command_exists rsync; then
     rsync -a --delete \
       --exclude '.git' \
@@ -673,10 +676,45 @@ sync_source_tree() {
   find "${SRC_DIR}" -type d -name '__pycache__' -prune -exec rm -rf {} +
 }
 
+run_pip_quiet() {
+  local log_file
+  log_file="$(mktemp /tmp/infra-bot-pip.XXXXXX.log)"
+  if ! "$@" >"${log_file}" 2>&1; then
+    warn "Command failed: $*"
+    cat "${log_file}" >&2 || true
+    rm -f "${log_file}"
+    return 1
+  fi
+  rm -f "${log_file}"
+  return 0
+}
+
 install_python_package() {
+  if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+    log "Creating virtualenv"
+    python3 -m venv "${VENV_DIR}"
+  fi
+
+  if [[ "${UPDATE_MODE}" -eq 1 ]]; then
+    log "Installing package"
+    run_pip_quiet "${VENV_DIR}/bin/pip" install -q --upgrade pip || die "Failed to upgrade pip"
+    run_pip_quiet "${VENV_DIR}/bin/pip" install -q --upgrade "${SRC_DIR}" || die "Failed to install infra-bot package"
+    return
+  fi
+
   python3 -m venv "${VENV_DIR}"
   "${VENV_DIR}/bin/pip" install --upgrade pip
   "${VENV_DIR}/bin/pip" install "${SRC_DIR}"
+}
+
+source_revision() {
+  if command_exists git && [[ -d "${REPO_ROOT}/.git" ]]; then
+    git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || true
+    return
+  fi
+  if [[ -f "${REPO_ROOT}/pyproject.toml" ]]; then
+    awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' "${REPO_ROOT}/pyproject.toml" 2>/dev/null || true
+  fi
 }
 
 load_runtime_settings_from_config() {
@@ -831,6 +869,9 @@ EOF
 }
 
 activate_services() {
+  if [[ "${UPDATE_MODE}" -eq 1 ]]; then
+    log "Restarting services"
+  fi
   systemctl daemon-reload
   systemctl enable infra-bot.service >/dev/null
   systemctl enable infra-bot-update.timer >/dev/null
@@ -839,19 +880,34 @@ activate_services() {
 }
 
 verify_install() {
-  systemctl is-active infra-bot.service >/dev/null || die "infra-bot.service is not active."
+  local service_state timer_state revision
+  service_state="$(systemctl is-active infra-bot.service 2>/dev/null || true)"
+  timer_state="$(systemctl is-enabled infra-bot-update.timer 2>/dev/null || true)"
+  revision="$(source_revision)"
+
+  [[ "${service_state}" == "active" ]] || die "infra-bot.service is not active (state: ${service_state:-unknown})."
   systemctl is-enabled infra-bot-update.timer >/dev/null || die "infra-bot-update.timer is not enabled."
   [[ -x "${UPDATE_COMMAND_PATH}" ]] || die "Missing update helper at ${UPDATE_COMMAND_PATH}"
 
   if [[ "${UPDATE_MODE}" -eq 1 ]]; then
-    log "Update complete."
-  else
-    log "Installation complete."
+    log "Update complete"
+    printf '  ref:      %s\n' "${DEFAULT_REPO_REF}"
+    if [[ -n "${revision}" ]]; then
+      printf '  revision: %s\n' "${revision}"
+    fi
+    printf '  service:  %s\n' "${service_state}"
+    printf '  timer:    %s\n' "${timer_state}"
+    printf '  config:   %s (unchanged)\n' "${CONFIG_PATH}"
+    return
   fi
+
+  log "Installation complete."
   printf '\nFollow-up commands:\n'
   printf '  systemctl status infra-bot.service\n'
   printf '  systemctl list-timers infra-bot-update.timer\n'
   printf '  %s --config %s status\n' "${VENV_DIR}/bin/infra-bot" "${CONFIG_PATH}"
+  printf '  sudo infra-bot-update\n'
+  printf '\nNote: ~/infra-bot is optional after install. Day-2 updates use:\n'
   printf '  sudo infra-bot-update\n'
 }
 
@@ -866,7 +922,7 @@ main() {
 
   if [[ "${UPDATE_MODE}" -eq 1 ]]; then
     load_runtime_settings_from_config
-    log "Updating infra-bot from ${REPO_ROOT} (config kept at ${CONFIG_PATH})"
+    log "Updating infra-bot (config preserved)"
   else
     collect_inputs
     validate_required_inputs

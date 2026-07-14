@@ -216,7 +216,7 @@ download_github_tarball() {
   [[ -n "${token}" ]] || return 1
   command_exists curl || return 1
 
-  log "Downloading ${slug}@${ref} via GitHub API"
+  log "Downloading ${slug}@${ref}"
   curl_args+=(-H "Authorization: Bearer ${token}")
   curl_args+=(-H "X-GitHub-Api-Version: 2022-11-28")
   if ! curl "${curl_args[@]}" "${url}" -o "${archive}"; then
@@ -257,10 +257,10 @@ clone_git_repo() {
   [[ -n "${url}" ]] || return 1
   rm -rf "${dest_dir}"
 
-  log "Cloning ${url} (ref ${ref})"
-  if run_git clone --depth 1 --branch "${ref}" "${url}" "${dest_dir}"; then
+  log "Fetching ${url} @ ${ref}"
+  if run_git clone --quiet --depth 1 --branch "${ref}" "${url}" "${dest_dir}"; then
     :
-  elif run_git clone --depth 1 "${url}" "${dest_dir}"; then
+  elif run_git clone --quiet --depth 1 "${url}" "${dest_dir}"; then
     run_git -C "${dest_dir}" checkout "${ref}" >/dev/null 2>&1 || true
   else
     warn "git clone failed for ${url}"
@@ -386,7 +386,6 @@ resolve_source_tree() {
   CLEANUP_WORKDIR=1
 
   if fetch_source "${WORKDIR}"; then
-    log "Fetched source into ${WORKDIR}"
     return
   fi
 
@@ -397,7 +396,7 @@ resolve_source_tree() {
     WORKDIR="${user_checkout}"
     refresh_user_checkout "${WORKDIR}" || true
     if source_tree_ok "${WORKDIR}"; then
-      log "Using fallback local checkout at ${WORKDIR}"
+      log "Using local checkout ${WORKDIR}"
       return
     fi
   fi
@@ -412,7 +411,6 @@ run_installer() {
   chmod +x "${installer}" || true
 
   if [[ "${MODE}" == "update" ]]; then
-    log "Running installer in update mode (config preserved)"
     # shellcheck disable=SC2086
     bash "${installer}" --update "${EXTRA_INSTALL_ARGS[@]+"${EXTRA_INSTALL_ARGS[@]}"}"
     return
