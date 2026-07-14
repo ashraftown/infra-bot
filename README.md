@@ -19,7 +19,7 @@ curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash
 ## Features
 
 | Feature | Description |
-|---------|-------------|
+|:--------|:------------|
 | **Weekly upgrades** | `apt-get update` / `upgrade` / optional `dist-upgrade` + `autoremove` |
 | **Chat alerts** | Start, success (with package versions), failure, reboot scheduling |
 | **Messaging** | Telegram, Slack, or both |
@@ -82,7 +82,7 @@ done
 ## Messaging modes
 
 | Mode | Behavior |
-|------|----------|
+|:-----|:---------|
 | `telegram` | Telegram commands + notifications |
 | `slack` | Slack slash commands + notifications |
 | `both` | Telegram and Slack together |
@@ -92,7 +92,7 @@ done
 Base schedule is **Sunday 02:00**. Set stagger minutes per host:
 
 | Host order | `stagger_minutes` | Runs at |
-|------------|-------------------|---------|
+|:-----------|:------------------|:--------|
 | 1st | `0` | 02:00 |
 | 2nd | `15` | 02:15 |
 | 3rd | `30` | 02:30 |
