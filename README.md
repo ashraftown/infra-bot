@@ -1,26 +1,37 @@
 # infra-bot
 
-`infra-bot` is a small Python service for Ubuntu 24.04 hosts that:
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Telegram](https://img.shields.io/badge/Telegram-ready-26A5E4?logo=telegram&logoColor=white)](https://telegram.org/)
+[![Slack](https://img.shields.io/badge/Slack-ready-4A154B?logo=slack&logoColor=white)](https://slack.com/)
 
-- polls Telegram and/or Slack for read-only bot commands
-- applies weekly `apt` upgrades locally on each server
-- alerts configured Telegram chats and/or Slack channels on start, success, failure, and reboot scheduling
-- stores operational state in a local JSON file
+**Local Ubuntu update agent** with Telegram and Slack notifications.
 
-Host secrets (bot tokens, chat IDs, channel IDs) live only in `/etc/infra-bot/config.yaml` on each machine. They are never required in the git repository.
+Each host runs its own agent: weekly `apt` upgrades, optional scheduled reboots, and chat commands for status — no central control plane required.
 
-## Project layout
+```bash
+curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash
+```
 
-- `infra_bot/`: application code
-- `deploy/config/config.example.yaml`: example host config (placeholders only)
-- `deploy/systemd/`: service and timer units
-- `scripts/install.sh`: interactive host installer
-- `scripts/get-infra-bot.sh`: remote install / self-update entrypoint
-- `tests/`: unit and integration-style tests
+---
 
-## Install
+## Features
 
-### One-line bootstrap (recommended)
+| | |
+|---|---|
+| **Weekly upgrades** | `apt-get update` / `upgrade` / optional `dist-upgrade` + `autoremove` |
+| **Chat alerts** | Start, success (with package versions), failure, reboot scheduling |
+| **Messaging** | Telegram, Slack, or both |
+| **Bot commands** | `/status`, `/updates`, `/lastrun`, and more (read-only) |
+| **Self-update** | `sudo infra-bot-update` — no permanent git checkout on the host |
+| **Secrets on host** | Tokens and chat IDs only in `/etc/infra-bot/config.yaml` |
+
+---
+
+## Quick start
+
+### Install
 
 ```bash
 curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash
@@ -29,63 +40,23 @@ curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash
 With options:
 
 ```bash
-curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash -s -- --server-name web-01 --stagger-minutes 0
+curl -fsSL https://corewaze.com/infra-bot/install.sh \
+  | sudo bash -s -- --server-name web-01 --stagger-minutes 0
 ```
 
-Update an existing install from the same URL:
+### Update
+
+```bash
+sudo infra-bot-update
+```
+
+Or via the same bootstrap URL:
 
 ```bash
 curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash -s -- update
-# or, after first install:
-sudo infra-bot-update
 ```
 
-The bootstrap script downloads this repo from GitHub (public HTTPS), then runs the interactive installer (or `--update`).
-
-### First install (from a git checkout)
-
-```bash
-git clone https://github.com/ashraftown/infra-bot.git
-cd infra-bot
-sudo ./scripts/install.sh
-```
-
-The installer:
-
-- validates the host environment
-- prompts for messaging and host-specific settings
-- installs the app into `/opt/infra-bot/.venv`
-- writes `/etc/infra-bot/config.yaml`
-- writes `/etc/infra-bot/install.conf` (source repo metadata for self-update)
-- installs `sudo infra-bot-update` for day-2 upgrades
-- installs and enables the `systemd` service and timer
-
-### Update an already-installed host
-
-```bash
-sudo infra-bot-update
-```
-
-That command:
-
-1. downloads the configured ref into a temporary directory (for example `/tmp/infra-bot-src.*`)
-2. reinstalls the package into `/opt/infra-bot/.venv` and `/opt/infra-bot/src`
-3. refreshes systemd units
-4. restarts services
-5. **keeps** `/etc/infra-bot/config.yaml` unchanged
-6. deletes the temporary download when finished
-
-You do **not** need a permanent `~/infra-bot` checkout on each host. After `sudo infra-bot-update` works once, you can remove any local clone if you want.
-
-Useful variants:
-
-```bash
-sudo infra-bot-update --ref main
-sudo infra-bot-update --local          # use a local checkout next to the script
-sudo ./scripts/install.sh --update     # reinstall from the current checkout only
-```
-
-Roll several hosts:
+### Roll several hosts
 
 ```bash
 for h in host-a host-b host-c; do
@@ -93,59 +64,75 @@ for h in host-a host-b host-c; do
 done
 ```
 
-### Messaging modes
+> **Tip:** After the first successful update you can delete any `~/infra-bot` clone. Day-2 is just `sudo infra-bot-update`.
 
-- `telegram`: Telegram commands and Telegram notifications
-- `slack`: Slack slash-command support and Slack notifications
-- `both`: Telegram and Slack together
+---
 
-For multi-host rollouts, stagger weekly updates (minutes after Sunday 02:00 UTC base):
+## What the installer does
 
-- first host: `0`
-- second host: `15`
-- third host: `30`
+1. Validates Ubuntu / installs prerequisites  
+2. Prompts for messaging settings (or reuses existing config)  
+3. Installs into `/opt/infra-bot/.venv`  
+4. Writes `/etc/infra-bot/config.yaml` and `/etc/infra-bot/install.conf`  
+5. Installs `sudo infra-bot-update`  
+6. Enables `infra-bot.service` + weekly `infra-bot-update.timer`  
 
-Re-running `sudo ./scripts/install.sh` (without `--update`) is still safe for interactive reconfiguration. It reuses the current config as prompt defaults, refreshes the deployed source tree, reinstalls the package into the managed virtualenv, and restarts the owned services.
+---
 
-## Manual Install
+## Messaging modes
 
-```bash
-sudo mkdir -p /opt/infra-bot/src /etc/infra-bot /var/lib/infra-bot
-sudo cp -R . /opt/infra-bot/src
-cd /opt/infra-bot/src
-sudo python3 -m venv /opt/infra-bot/.venv
-sudo /opt/infra-bot/.venv/bin/pip install /opt/infra-bot/src
+| Mode | Behavior |
+|------|----------|
+| `telegram` | Telegram commands + notifications |
+| `slack` | Slack slash commands + notifications |
+| `both` | Telegram and Slack together |
+
+### Stagger (multi-host)
+
+Base schedule is **Sunday 02:00**. Set stagger minutes per host:
+
+| Host order | `stagger_minutes` | Runs at |
+|------------|-------------------|---------|
+| 1st | `0` | 02:00 |
+| 2nd | `15` | 02:15 |
+| 3rd | `30` | 02:30 |
+
+---
+
+## Bot commands
+
+### Telegram
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Identity + help |
+| `/status` | Health summary |
+| `/updates` | Pending packages (with versions) |
+| `/lastrun` | Last maintenance run |
+| `/reboot` | Info only — reboots are automated |
+| `/help` | Command list |
+
+### Slack
+
+Single slash command (default `/infra-bot`), first argument is the action:
+
+```text
+/infra-bot status
+/infra-bot updates
+/infra-bot lastrun
+/infra-bot reboot
+/infra-bot help
 ```
 
-Copy the sample config:
+### Slack app requirements
 
-```bash
-sudo cp deploy/config/config.example.yaml /etc/infra-bot/config.yaml
-sudo chown root:infra-bot /etc/infra-bot/config.yaml
-sudo chmod 640 /etc/infra-bot/config.yaml
-```
+- Bot token (`xoxb-…`)
+- App-level token (`xapp-…`)
+- **Socket Mode** enabled (no public inbound HTTP per host)
+- Slash command (default `/infra-bot`)
+- Permissions to post messages and receive slash commands
 
-Adjust:
-
-- `server_name`
-- `messaging.mode`
-- `telegram.bot_token` and `telegram.allowed_chat_ids` when Telegram is enabled
-- `slack.bot_token`, `slack.app_token`, `slack.allowed_user_ids`, and `slack.notification_channel_ids` when Slack is enabled
-- `update_policy.stagger_minutes`
-
-## Systemd
-
-Install the units:
-
-```bash
-sudo cp deploy/systemd/*.service /etc/systemd/system/
-sudo cp deploy/systemd/*.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now infra-bot.service
-sudo systemctl enable --now infra-bot-update.timer
-```
-
-Per host, adjust the timer calendar (or use the installer, which sets `OnCalendar` from stagger minutes). The default unit ships with `02:00` Sunday.
+---
 
 ## CLI
 
@@ -156,64 +143,121 @@ Per host, adjust the timer calendar (or use the installer, which sets `OnCalenda
 /opt/infra-bot/.venv/bin/infra-bot --config /etc/infra-bot/config.yaml pending-updates
 ```
 
-## Bot commands
+---
 
-- `/start`
-- `/status`
-- `/updates`
-- `/lastrun`
-- `/reboot`
-- `/help`
+## Project layout
 
-Telegram uses those commands directly.
+```text
+infra_bot/                 # Application code
+deploy/config/             # Example host config (placeholders only)
+deploy/systemd/            # Service and timer units
+scripts/install.sh         # Interactive host installer
+scripts/bootstrap-install.sh   # curl | bash entrypoint (served at corewaze.com)
+scripts/get-infra-bot.sh   # Self-update helper used by infra-bot-update
+tests/                     # Unit tests
+```
 
-Slack uses a single slash command, default `/infra-bot`, with the command name as the first argument:
+---
 
-- `/infra-bot status`
-- `/infra-bot updates`
-- `/infra-bot lastrun`
-- `/infra-bot reboot`
-- `/infra-bot help`
+## Security
 
-## Slack setup
+- Keep tokens and chat/channel IDs **only** in `/etc/infra-bot/config.yaml` on each host (`0600` / `0640`, not world-readable).
+- Telegram / Slack access is **allowlisted** (`allowed_chat_ids` / `allowed_user_ids`).
+- Messaging bot runs as unprivileged user `infra-bot`; weekly package updates run as **root** via systemd.
+- Chat commands are **read-only**; `/reboot` does not reboot the host.
+- Self-update uses public HTTPS GitHub; **no GitHub tokens** are stored on disk.
+- Never commit host configs or real bot tokens.
 
-For Slack mode, create and install a Slack app with:
+See [SECURITY.md](SECURITY.md) to report vulnerabilities.
 
-- a bot token (`xoxb-...`)
-- an app-level token (`xapp-...`)
-- Socket Mode enabled
-- a slash command, default `/infra-bot`
-- permissions sufficient to post messages and receive slash commands
+---
 
-The installer prompts for:
+## Advanced install
 
-- `slack.bot_token`
-- `slack.app_token`
-- `slack.allowed_user_ids`
-- `slack.notification_channel_ids`
-- `slack.command_name`
+<details>
+<summary><strong>Install from a git checkout</strong></summary>
 
-## Security notes
+```bash
+git clone https://github.com/ashraftown/infra-bot.git
+cd infra-bot
+sudo ./scripts/install.sh
+```
 
-- Keep real tokens and chat/channel IDs only in `/etc/infra-bot/config.yaml` on hosts (mode `0600`/`0640`, not world-readable).
-- Telegram and Slack commands are allowlisted (`allowed_chat_ids` / `allowed_user_ids`).
-- Weekly package updates run as root via systemd; the messaging bot runs as the unprivileged `infra-bot` user.
-- Bot commands are read-only operational views; reboots are not triggered from chat (`/reboot` is informational only).
-- Self-update uses the public HTTPS GitHub URL written to `/etc/infra-bot/install.conf`. GitHub tokens are **not** stored on disk.
-- Do not commit host configs or bot tokens.
+Re-running without `--update` is safe for interactive reconfiguration (reuses current config as defaults).
 
-## License
+</details>
 
-MIT — see [LICENSE](LICENSE).
+<details>
+<summary><strong>Update options</strong></summary>
 
-## Contributing
+```bash
+sudo infra-bot-update --ref main
+sudo infra-bot-update --local          # use a local checkout next to the script
+sudo ./scripts/install.sh --update     # reinstall from the current checkout only
+```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
+`sudo infra-bot-update` will:
 
-## Notes
+1. Download the configured ref into a temp directory  
+2. Reinstall into `/opt/infra-bot/.venv` and `/opt/infra-bot/src`  
+3. Refresh systemd units and restart services  
+4. **Keep** `/etc/infra-bot/config.yaml` unchanged  
+5. Delete the temp download when finished  
 
-- The same Telegram bot token can be reused across all servers.
-- Slack support uses Socket Mode, so no public inbound HTTP endpoint is required per host.
-- In this local-agent design, commands target the individual server running the bot.
-- There is no central aggregation layer in this version.
-- The installer prefers `setfacl` for a root-owned `0600` config while still allowing the `infra-bot` service user to read it; if ACL tools are unavailable it falls back to `0640 root:infra-bot`.
+</details>
+
+<details>
+<summary><strong>Manual install</strong></summary>
+
+```bash
+sudo mkdir -p /opt/infra-bot/src /etc/infra-bot /var/lib/infra-bot
+sudo cp -R . /opt/infra-bot/src
+cd /opt/infra-bot/src
+sudo python3 -m venv /opt/infra-bot/.venv
+sudo /opt/infra-bot/.venv/bin/pip install /opt/infra-bot/src
+
+sudo cp deploy/config/config.example.yaml /etc/infra-bot/config.yaml
+sudo chown root:infra-bot /etc/infra-bot/config.yaml
+sudo chmod 640 /etc/infra-bot/config.yaml
+```
+
+Edit at least:
+
+- `server_name`
+- `messaging.mode`
+- Telegram and/or Slack credentials
+- `update_policy.stagger_minutes`
+
+Then install units:
+
+```bash
+sudo cp deploy/systemd/*.service /etc/systemd/system/
+sudo cp deploy/systemd/*.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now infra-bot.service
+sudo systemctl enable --now infra-bot-update.timer
+```
+
+The default timer is Sunday `02:00`. Prefer the installer, which sets `OnCalendar` from stagger minutes.
+
+</details>
+
+<details>
+<summary><strong>Notes</strong></summary>
+
+- The same Telegram bot token can be reused on every server.
+- Slack uses Socket Mode — no public webhook URL per host.
+- Commands always target the **individual** host running the bot (no central aggregation).
+- Config permissions: installer prefers `setfacl` for root-owned `0600` while allowing the `infra-bot` user to read; otherwise `0640 root:infra-bot`.
+
+</details>
+
+---
+
+## License & contributing
+
+| | |
+|---|---|
+| **License** | [MIT](LICENSE) |
+| **Contributing** | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| **Security** | [SECURITY.md](SECURITY.md) |
