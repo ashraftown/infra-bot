@@ -15,6 +15,19 @@ def run_install_shell(script_body: str) -> subprocess.CompletedProcess[str]:
 def test_install_script_has_valid_bash_syntax() -> None:
     subprocess.run(["bash", "-n", str(SCRIPTS / "install.sh")], check=True)
     subprocess.run(["bash", "-n", str(SCRIPTS / "get-infra-bot.sh")], check=True)
+    subprocess.run(["bash", "-n", str(SCRIPTS / "bootstrap-install.sh")], check=True)
+
+
+def test_bootstrap_install_help() -> None:
+    script = SCRIPTS / "bootstrap-install.sh"
+    result = subprocess.run(
+        ["bash", str(script), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "corewaze.com/infra-bot/install.sh" in result.stdout
 
 
 def test_parse_args_enables_update_mode() -> None:

@@ -16,10 +16,16 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# When piped (curl | bash), BASH_SOURCE is not a real file path.
+_SOURCE_PATH="${BASH_SOURCE[0]:-}"
+if [[ -n "${_SOURCE_PATH}" && -f "${_SOURCE_PATH}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${_SOURCE_PATH}")" && pwd)"
+else
+  SCRIPT_DIR=""
+fi
 
 # shellcheck source=./lib/common.sh
-if [[ -f "${SCRIPT_DIR}/lib/common.sh" ]]; then
+if [[ -n "${SCRIPT_DIR}" && -f "${SCRIPT_DIR}/lib/common.sh" ]]; then
   source "${SCRIPT_DIR}/lib/common.sh"
 else
   log() { printf '[infra-bot] %s\n' "$*"; }

@@ -22,6 +22,7 @@ Target platform is **Ubuntu 24.04**. The installer and systemd units assume `apt
 - Prefer small, focused pull requests with tests for behavior changes.
 - Installer changes should keep `sudo ./scripts/install.sh --update` non-interactive and config-preserving.
 - Self-update (`sudo infra-bot-update`) should work against the public HTTPS GitHub URL without a stored token.
+- The curl bootstrap lives in `scripts/bootstrap-install.sh` and is published to the website as `public/infra-bot/install.sh` (corewaze.com). Keep them in sync when changing bootstrap behavior.
 
 ## Pull requests
 

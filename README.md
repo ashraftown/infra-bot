@@ -20,6 +20,28 @@ Host secrets (bot tokens, chat IDs, channel IDs) live only in `/etc/infra-bot/co
 
 ## Install
 
+### One-line bootstrap (recommended)
+
+```bash
+curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash
+```
+
+With options:
+
+```bash
+curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash -s -- --server-name web-01 --stagger-minutes 0
+```
+
+Update an existing install from the same URL:
+
+```bash
+curl -fsSL https://corewaze.com/infra-bot/install.sh | sudo bash -s -- update
+# or, after first install:
+sudo infra-bot-update
+```
+
+The bootstrap script downloads this repo from GitHub (public HTTPS), then runs the interactive installer (or `--update`).
+
 ### First install (from a git checkout)
 
 ```bash
