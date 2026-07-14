@@ -11,10 +11,13 @@ source "${SCRIPT_DIR}/lib/common.sh"
 APP_HOME="/opt/infra-bot"
 VENV_DIR="${APP_HOME}/.venv"
 SRC_DIR="${APP_HOME}/src"
+BIN_DIR="${APP_HOME}/bin"
 CONFIG_DIR="/etc/infra-bot"
 CONFIG_PATH="${CONFIG_DIR}/config.yaml"
+INSTALL_CONF="${CONFIG_DIR}/install.conf"
 STATE_DIR="/var/lib/infra-bot"
 SYSTEMD_DIR="/etc/systemd/system"
+UPDATE_COMMAND_PATH="/usr/local/sbin/infra-bot-update"
 SERVICE_USER="infra-bot"
 SERVICE_GROUP="infra-bot"
 DEFAULT_SERVER_NAME="web-01"
@@ -29,8 +32,13 @@ DEFAULT_STAGGER="0"
 DEFAULT_USE_DIST_UPGRADE="true"
 DEFAULT_AUTOREMOVE="true"
 DEFAULT_REBOOT_GRACE="5"
+DEFAULT_REPO_SLUG="${INFRA_BOT_REPO_SLUG:-ashraftown/infra-bot}"
+DEFAULT_REPO_REF="${INFRA_BOT_REF:-main}"
+DEFAULT_REPO_URL="${INFRA_BOT_REPO_URL:-}"
 NON_INTERACTIVE=0
 FORCE=0
+UPDATE_MODE=0
+KEEP_CONFIG=0
 
 SERVER_NAME=""
 MESSAGING_MODE=""
@@ -52,6 +60,7 @@ usage() {
 Usage: sudo ./scripts/install.sh [options]
 
 Options:
+  --update                 Refresh code/package/units; keep existing config
   --non-interactive
   --server-name VALUE
   --messaging-mode telegram|slack|both
@@ -64,14 +73,26 @@ Options:
   --slack-channel-ids VALUE
   --slack-command-name VALUE
   --stagger-minutes VALUE
+  --repo-slug OWNER/REPO
+  --ref REF
+  --repo-url URL
   --force
   --help
+
+Typical day-2 usage on an already-installed host:
+  sudo infra-bot-update
 EOF
 }
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --update)
+        UPDATE_MODE=1
+        KEEP_CONFIG=1
+        NON_INTERACTIVE=1
+        shift
+        ;;
       --non-interactive)
         NON_INTERACTIVE=1
         shift
@@ -114,6 +135,18 @@ parse_args() {
         ;;
       --stagger-minutes)
         STAGGER_MINUTES="${2:-}"
+        shift 2
+        ;;
+      --repo-slug)
+        DEFAULT_REPO_SLUG="${2:-}"
+        shift 2
+        ;;
+      --ref)
+        DEFAULT_REPO_REF="${2:-}"
+        shift 2
+        ;;
+      --repo-url)
+        DEFAULT_REPO_URL="${2:-}"
         shift 2
         ;;
       --force)
@@ -557,8 +590,68 @@ create_user_and_dirs() {
     useradd --system --home "${APP_HOME}" --gid "${SERVICE_GROUP}" --shell /usr/sbin/nologin "${SERVICE_USER}"
   fi
 
-  install -d -m 0755 -o root -g root "${APP_HOME}" "${SRC_DIR}" "${CONFIG_DIR}"
+  install -d -m 0755 -o root -g root "${APP_HOME}" "${SRC_DIR}" "${BIN_DIR}" "${CONFIG_DIR}"
   install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${STATE_DIR}"
+}
+
+detect_repo_metadata() {
+  if [[ -z "${DEFAULT_REPO_URL}" ]] && command_exists git && [[ -d "${REPO_ROOT}/.git" ]]; then
+    DEFAULT_REPO_URL="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
+  fi
+
+  if [[ -z "${DEFAULT_REPO_SLUG}" || "${DEFAULT_REPO_SLUG}" == "ashraftown/infra-bot" ]]; then
+    if [[ "${DEFAULT_REPO_URL}" =~ github.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+      DEFAULT_REPO_SLUG="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    fi
+  fi
+
+  if command_exists git && [[ -d "${REPO_ROOT}/.git" ]]; then
+    local current_ref
+    current_ref="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [[ -n "${current_ref}" && "${current_ref}" != "HEAD" ]]; then
+      DEFAULT_REPO_REF="${INFRA_BOT_REF:-${current_ref}}"
+    fi
+  fi
+}
+
+write_install_conf() {
+  detect_repo_metadata
+  local token_line=""
+  # Persist token only when explicitly provided via env for unattended host updates.
+  if [[ -n "${INFRA_BOT_GITHUB_TOKEN:-}" ]]; then
+    token_line="GITHUB_TOKEN_FROM_CONF=\"${INFRA_BOT_GITHUB_TOKEN}\""
+  elif [[ -f "${INSTALL_CONF}" ]]; then
+    # Preserve previously stored token when re-running install/update.
+    token_line="$(awk -F= '/^GITHUB_TOKEN_FROM_CONF=/{print; exit}' "${INSTALL_CONF}" || true)"
+  fi
+
+  cat > "${INSTALL_CONF}" <<EOF
+# Managed by infra-bot installer. Used by: sudo infra-bot-update
+REPO_SLUG="${DEFAULT_REPO_SLUG}"
+REPO_REF="${DEFAULT_REPO_REF}"
+REPO_URL="${DEFAULT_REPO_URL}"
+${token_line}
+EOF
+  chown root:root "${INSTALL_CONF}"
+  chmod 0600 "${INSTALL_CONF}"
+}
+
+install_update_helper() {
+  install -d -m 0755 -o root -g root "${BIN_DIR}"
+  install -m 0755 "${REPO_ROOT}/scripts/get-infra-bot.sh" "${BIN_DIR}/get-infra-bot.sh"
+  if [[ -d "${REPO_ROOT}/scripts/lib" ]]; then
+    rm -rf "${BIN_DIR}/lib"
+    mkdir -p "${BIN_DIR}/lib"
+    cp -R "${REPO_ROOT}/scripts/lib/." "${BIN_DIR}/lib/"
+  fi
+
+  cat > "${UPDATE_COMMAND_PATH}" <<EOF
+#!/usr/bin/env bash
+# Refresh infra-bot from the configured GitHub/git source and reinstall.
+set -euo pipefail
+exec "${BIN_DIR}/get-infra-bot.sh" update "\$@"
+EOF
+  chmod 0755 "${UPDATE_COMMAND_PATH}"
 }
 
 sync_source_tree() {
@@ -568,6 +661,7 @@ sync_source_tree() {
       --exclude '.pytest_cache' \
       --exclude '.venv' \
       --exclude '__pycache__' \
+      --exclude 'infra_bot.egg-info' \
       "${REPO_ROOT}/" "${SRC_DIR}/"
     return
   fi
@@ -575,7 +669,7 @@ sync_source_tree() {
   rm -rf "${SRC_DIR}"
   mkdir -p "${SRC_DIR}"
   cp -R "${REPO_ROOT}/." "${SRC_DIR}/"
-  rm -rf "${SRC_DIR}/.git" "${SRC_DIR}/.pytest_cache" "${SRC_DIR}/.venv"
+  rm -rf "${SRC_DIR}/.git" "${SRC_DIR}/.pytest_cache" "${SRC_DIR}/.venv" "${SRC_DIR}/infra_bot.egg-info"
   find "${SRC_DIR}" -type d -name '__pycache__' -prune -exec rm -rf {} +
 }
 
@@ -583,6 +677,26 @@ install_python_package() {
   python3 -m venv "${VENV_DIR}"
   "${VENV_DIR}/bin/pip" install --upgrade pip
   "${VENV_DIR}/bin/pip" install "${SRC_DIR}"
+}
+
+load_runtime_settings_from_config() {
+  [[ -f "${CONFIG_PATH}" ]] || die "Missing config at ${CONFIG_PATH}. Run a full install first."
+  load_existing_defaults
+  SERVER_NAME="${SERVER_NAME:-$DEFAULT_SERVER_NAME}"
+  MESSAGING_MODE="${MESSAGING_MODE:-$DEFAULT_MESSAGING_MODE}"
+  TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-${DEFAULT_TELEGRAM_BOT_TOKEN:-}}"
+  ALLOWED_CHAT_IDS="${ALLOWED_CHAT_IDS:-$DEFAULT_ALLOWED_CHAT_IDS}"
+  POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-$DEFAULT_POLL_TIMEOUT}"
+  SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-${DEFAULT_SLACK_BOT_TOKEN:-}}"
+  SLACK_APP_TOKEN="${SLACK_APP_TOKEN:-${DEFAULT_SLACK_APP_TOKEN:-}}"
+  SLACK_ALLOWED_USER_IDS="${SLACK_ALLOWED_USER_IDS:-$DEFAULT_SLACK_ALLOWED_USER_IDS}"
+  SLACK_CHANNEL_IDS="${SLACK_CHANNEL_IDS:-$DEFAULT_SLACK_CHANNEL_IDS}"
+  SLACK_COMMAND_NAME="${SLACK_COMMAND_NAME:-$DEFAULT_SLACK_COMMAND_NAME}"
+  STAGGER_MINUTES="${STAGGER_MINUTES:-$DEFAULT_STAGGER}"
+  USE_DIST_UPGRADE="${USE_DIST_UPGRADE:-$DEFAULT_USE_DIST_UPGRADE}"
+  AUTOREMOVE="${AUTOREMOVE:-$DEFAULT_AUTOREMOVE}"
+  REBOOT_GRACE_MINUTES="${REBOOT_GRACE_MINUTES:-$DEFAULT_REBOOT_GRACE}"
+  validate_required_inputs
 }
 
 render_list_yaml() {
@@ -727,12 +841,18 @@ activate_services() {
 verify_install() {
   systemctl is-active infra-bot.service >/dev/null || die "infra-bot.service is not active."
   systemctl is-enabled infra-bot-update.timer >/dev/null || die "infra-bot-update.timer is not enabled."
+  [[ -x "${UPDATE_COMMAND_PATH}" ]] || die "Missing update helper at ${UPDATE_COMMAND_PATH}"
 
-  log "Installation complete."
+  if [[ "${UPDATE_MODE}" -eq 1 ]]; then
+    log "Update complete."
+  else
+    log "Installation complete."
+  fi
   printf '\nFollow-up commands:\n'
   printf '  systemctl status infra-bot.service\n'
   printf '  systemctl list-timers infra-bot-update.timer\n'
   printf '  %s --config %s status\n' "${VENV_DIR}/bin/infra-bot" "${CONFIG_PATH}"
+  printf '  sudo infra-bot-update\n'
 }
 
 main() {
@@ -742,13 +862,25 @@ main() {
   check_os
   ensure_base_commands
   install_prereqs
-  collect_inputs
-  validate_required_inputs
-  confirm_summary
+  detect_repo_metadata
+
+  if [[ "${UPDATE_MODE}" -eq 1 ]]; then
+    load_runtime_settings_from_config
+    log "Updating infra-bot from ${REPO_ROOT} (config kept at ${CONFIG_PATH})"
+  else
+    collect_inputs
+    validate_required_inputs
+    confirm_summary
+  fi
+
   create_user_and_dirs
   sync_source_tree
   install_python_package
-  write_config
+  if [[ "${KEEP_CONFIG}" -eq 0 ]]; then
+    write_config
+  fi
+  write_install_conf
+  install_update_helper
   write_service_units
   activate_services
   verify_install

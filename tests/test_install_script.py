@@ -3,15 +3,34 @@ import shlex
 import subprocess
 
 
+SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+
+
 def run_install_shell(script_body: str) -> subprocess.CompletedProcess[str]:
-    script = Path(__file__).resolve().parent.parent / "scripts" / "install.sh"
+    script = SCRIPTS / "install.sh"
     command = f"source {shlex.quote(str(script))}\n{script_body}"
     return subprocess.run(["bash", "-lc", command], capture_output=True, text=True, check=False)
 
 
 def test_install_script_has_valid_bash_syntax() -> None:
-    script = Path(__file__).resolve().parent.parent / "scripts" / "install.sh"
-    subprocess.run(["bash", "-n", str(script)], check=True)
+    subprocess.run(["bash", "-n", str(SCRIPTS / "install.sh")], check=True)
+    subprocess.run(["bash", "-n", str(SCRIPTS / "get-infra-bot.sh")], check=True)
+
+
+def test_parse_args_enables_update_mode() -> None:
+    result = run_install_shell(
+        """
+parse_args --update --repo-slug example/infra-bot --ref main
+printf 'UPDATE_MODE=%s KEEP_CONFIG=%s NON_INTERACTIVE=%s REPO=%s REF=%s\\n' \
+  "${UPDATE_MODE}" "${KEEP_CONFIG}" "${NON_INTERACTIVE}" "${DEFAULT_REPO_SLUG}" "${DEFAULT_REPO_REF}"
+"""
+    )
+    assert result.returncode == 0, result.stderr
+    assert "UPDATE_MODE=1" in result.stdout
+    assert "KEEP_CONFIG=1" in result.stdout
+    assert "NON_INTERACTIVE=1" in result.stdout
+    assert "REPO=example/infra-bot" in result.stdout
+    assert "REF=main" in result.stdout
 
 
 def test_validate_required_inputs_accepts_telegram_only_mode() -> None:

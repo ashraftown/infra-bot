@@ -17,9 +17,11 @@
 
 ## Install
 
-Primary path:
+### First install (from a git checkout)
 
 ```bash
+git clone git@github.com:ashraftown/infra-bot.git
+cd infra-bot
 sudo ./scripts/install.sh
 ```
 
@@ -29,9 +31,54 @@ The installer:
 - prompts for messaging and host-specific settings
 - installs the app into `/opt/infra-bot/.venv`
 - writes `/etc/infra-bot/config.yaml`
+- writes `/etc/infra-bot/install.conf` (source repo metadata for self-update)
+- installs `sudo infra-bot-update` for day-2 upgrades
 - installs and enables the `systemd` service and timer
 
-Messaging modes:
+### Update an already-installed host (no git pull needed)
+
+```bash
+sudo infra-bot-update
+```
+
+That command:
+
+1. downloads the configured ref of this repo (GitHub API tarball or git clone)
+2. reinstalls the package into `/opt/infra-bot/.venv`
+3. refreshes systemd units
+4. restarts services
+5. **keeps** `/etc/infra-bot/config.yaml` unchanged
+
+Because this GitHub repo is private, hosts need one of:
+
+- `GITHUB_TOKEN` / `INFRA_BOT_GITHUB_TOKEN` with `contents:read` (recommended; can be persisted on first update), or
+- git+SSH access (`INFRA_BOT_REPO_URL` / deploy key)
+
+One-time token bootstrap on a host:
+
+```bash
+sudo env INFRA_BOT_GITHUB_TOKEN=ghp_xxx infra-bot-update
+```
+
+After that, the token is stored in `/etc/infra-bot/install.conf` (mode `0600`) and plain `sudo infra-bot-update` is enough.
+
+Roll all hosts:
+
+```bash
+for h in node1 node2 node3 base1; do
+  ssh "$h" 'sudo infra-bot-update'
+done
+```
+
+Useful variants:
+
+```bash
+sudo infra-bot-update --ref main
+sudo infra-bot-update --local          # use a local checkout next to the script
+sudo ./scripts/install.sh --update     # reinstall from the current checkout only
+```
+
+### Messaging modes
 
 - `telegram`: Telegram commands and Telegram notifications
 - `slack`: Slack slash-command support and Slack notifications
@@ -43,7 +90,7 @@ For the three-server rollout, use stagger values:
 - second host: `15`
 - third host: `30`
 
-Re-running `sudo ./scripts/install.sh` is safe. It reuses the current config as prompt defaults, refreshes the deployed source tree, reinstalls the package into the managed virtualenv, and restarts the owned services.
+Re-running `sudo ./scripts/install.sh` (without `--update`) is still safe for interactive reconfiguration. It reuses the current config as prompt defaults, refreshes the deployed source tree, reinstalls the package into the managed virtualenv, and restarts the owned services.
 
 ## Manual Install
 
