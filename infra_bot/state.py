@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def utc_now_iso() -> str:
@@ -82,11 +88,43 @@ class StateStore:
     def load(self) -> BotState:
         if not self.path.exists():
             return BotState()
-        with self.path.open("r", encoding="utf-8") as handle:
-            return BotState.from_dict(json.load(handle))
+        try:
+            raw = self.path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            LOGGER.warning("failed to read state file %s: %s", self.path, exc)
+            return BotState()
+        if not raw:
+            # Empty file (often from a crashed non-atomic write). Start fresh.
+            LOGGER.warning("state file %s is empty; using defaults", self.path)
+            return BotState()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            LOGGER.warning("state file %s is invalid JSON (%s); using defaults", self.path, exc)
+            return BotState()
+        if not isinstance(payload, dict):
+            LOGGER.warning("state file %s is not a JSON object; using defaults", self.path)
+            return BotState()
+        return BotState.from_dict(payload)
 
     def save(self, state: BotState) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as handle:
-            json.dump(state.to_dict(), handle, indent=2, sort_keys=True)
-            handle.write("\n")
+        payload = json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n"
+        # Atomic replace avoids truncated/empty state.json if the process dies mid-write.
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
+            dir=str(self.path.parent),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_name, self.path)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
