@@ -104,7 +104,7 @@ Base schedule is **Sunday 02:00**. Set stagger minutes per host:
 ### Telegram
 
 | Command | Description |
-|---------|-------------|
+|:--------|:------------|
 | `/start` | Identity + help |
 | `/status` | Health summary |
 | `/updates` | Pending packages (with versions) |
@@ -257,7 +257,7 @@ The default timer is Sunday `02:00`. Prefer the installer, which sets `OnCalenda
 ## License & contributing
 
 | Resource | Link |
-|----------|------|
+|:---------|:-----|
 | **License** | [MIT](LICENSE) |
 | **Contributing** | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | **Security** | [SECURITY.md](SECURITY.md) |
