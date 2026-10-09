@@ -121,6 +121,10 @@ class StateStore:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+                # state.json holds run results only (no tokens). Mode 0640 plus the setgid
+                # state directory (2750, see install.sh) lets the unprivileged bot service
+                # read files written by the root update run through group ownership.
+                os.fchmod(handle.fileno(), 0o640)
             os.replace(tmp_name, self.path)
         except Exception:
             try:

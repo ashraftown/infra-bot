@@ -1,3 +1,5 @@
+import stat
+
 from infra_bot.state import BotState, StateStore
 
 
@@ -41,3 +43,13 @@ def test_save_is_atomic_and_readable(tmp_path) -> None:
     store.save(BotState(last_run_status="success"))
     assert path.read_text(encoding="utf-8").strip().startswith("{")
     assert store.load().last_run_status == "success"
+
+
+def test_save_is_readable_by_bot_service_user(tmp_path) -> None:
+    # run-update writes state as root; run-bot runs as the unprivileged infra-bot
+    # user and must still be able to read it (0640 file inside the 2750 setgid
+    # state directory; see install.sh). No tokens are stored in state.
+    path = tmp_path / "state.json"
+    store = StateStore(path)
+    store.save(BotState(last_run_status="success"))
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640

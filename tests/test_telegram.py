@@ -52,3 +52,41 @@ def test_request_wraps_transport_timeouts(monkeypatch, raised, expected) -> None
 
     with pytest.raises(TelegramError, match=expected):
         client.get_updates()
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def test_request_wraps_non_json_body(monkeypatch) -> None:
+    client = TelegramClient("token")
+
+    def fake_urlopen(request, timeout):
+        return _FakeResponse(b"<html>gateway error</html>")
+
+    monkeypatch.setattr("infra_bot.telegram.urlopen", fake_urlopen)
+
+    with pytest.raises(TelegramError, match="invalid Telegram response"):
+        client.get_updates()
+
+
+def test_request_wraps_non_object_json(monkeypatch) -> None:
+    client = TelegramClient("token")
+
+    def fake_urlopen(request, timeout):
+        return _FakeResponse(b"[]")
+
+    monkeypatch.setattr("infra_bot.telegram.urlopen", fake_urlopen)
+
+    with pytest.raises(TelegramError, match="invalid Telegram response type"):
+        client.get_updates()

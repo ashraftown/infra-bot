@@ -12,6 +12,9 @@ from infra_bot.telegram import TelegramClient, TelegramError
 
 LOGGER = logging.getLogger(__name__)
 
+# Cap the wait between failed Telegram polls so persistent outages do not hammer the API.
+MAX_ERROR_SLEEP_SECONDS = 60
+
 
 def run_polling_bot(
     config: AppConfig,
@@ -24,6 +27,7 @@ def run_polling_bot(
 
     offset: int | None = None
     allowed = set(config.telegram.allowed_chat_ids)
+    consecutive_failures = 0
     while True:
         try:
             updates = telegram.get_updates(offset=offset, timeout=config.telegram.poll_timeout_seconds)
@@ -34,12 +38,14 @@ def run_polling_bot(
                     continue
                 reply = handle_command(update.text, config, store)
                 telegram.send_message(update.chat_id, reply)
+            consecutive_failures = 0
         except TelegramError as exc:
             LOGGER.warning("telegram polling failure: %s", exc)
             state = store.load()
             state.last_telegram_error = str(exc)
             store.save(state)
-            time.sleep(sleep_seconds)
+            consecutive_failures += 1
+            time.sleep(min(sleep_seconds * consecutive_failures, MAX_ERROR_SLEEP_SECONDS))
 
 
 def _persist_runtime_error(store: StateStore, provider: str, error: Exception) -> None:

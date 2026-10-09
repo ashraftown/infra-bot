@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import time
@@ -9,6 +10,9 @@ from infra_bot.config import AppConfig
 from infra_bot.notifiers import Notifier
 from infra_bot.reboot import reboot_required, schedule_reboot
 from infra_bot.state import BotState, StateStore, utc_now_iso
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 UPGRADE_COUNT_RE = re.compile(r"(\d+)\s+upgraded")
@@ -108,11 +112,6 @@ def list_upgradable_packages(command_runner=run_command) -> list[PackageUpdate]:
     return parse_upgradable_output(combined)
 
 
-def count_pending_updates(command_runner=run_command) -> tuple[int, list[str]]:
-    packages = list_upgradable_packages(command_runner)
-    return len(packages), [package.format_line() for package in packages[:10]]
-
-
 def format_package_lines(packages: list[PackageUpdate], *, max_lines: int | None = None) -> list[str]:
     if max_lines is None:
         return [package.format_line() for package in packages]
@@ -128,6 +127,13 @@ def _parse_package_count(output: str) -> int | None:
     if match:
         return int(match.group(1))
     return None
+
+
+def _truncate_message(text: str) -> str:
+    # Keep provider errors (long apt stderr) under Telegram's hard message limit.
+    if len(text) <= MAX_NOTIFY_CHARS:
+        return text
+    return text[:MAX_NOTIFY_CHARS - 1] + "…"
 
 
 def _apply_notifier_errors(state: BotState, errors_by_provider: dict[str, list[str]]) -> bool:
@@ -168,8 +174,12 @@ def _build_success_message(
     packages_changed: int | None,
     package_details: list[str],
     reboot_needed: bool,
+    reboot_failed: bool = False,
 ) -> str:
-    suffix = "reboot scheduled" if reboot_needed else "no reboot required"
+    if reboot_failed:
+        suffix = "reboot required (scheduling failed)"
+    else:
+        suffix = "reboot scheduled" if reboot_needed else "no reboot required"
     header = (
         f"[{server_name}] Update completed successfully in {duration}s. "
         f"Packages changed: {packages_changed if packages_changed is not None else 'unknown'}. {suffix}."
@@ -251,10 +261,14 @@ def perform_update(
             state.last_run_packages_changed = packages_changed
             state.last_run_package_details = []
             state.last_run_error = error
-            state.reboot_required = False
+            # The host may still need a reboot from an earlier run; do not wipe that signal.
+            reboot_needed = reboot_required(config.paths.reboot_marker_file)
+            state.reboot_required = reboot_needed
             store.save(state)
             if active_notifiers:
-                errors_by_provider = _notify(active_notifiers, f"[{config.server_name}] Update failed: {error}")
+                errors_by_provider = _notify(
+                    active_notifiers, _truncate_message(f"[{config.server_name}] Update failed: {error}")
+                )
                 if _apply_notifier_errors(state, errors_by_provider):
                     store.save(state)
             return UpdateResult(
@@ -262,7 +276,7 @@ def perform_update(
                 started_at,
                 duration,
                 packages_changed,
-                False,
+                reboot_needed,
                 error,
                 held_back,
                 package_details,
@@ -284,6 +298,7 @@ def perform_update(
 
     reboot_needed = reboot_required(config.paths.reboot_marker_file)
     duration = int(time.monotonic() - started)
+    reboot_failed: str | None = None
     state.last_run_at = started_at
     state.last_run_status = "success"
     state.last_run_duration_seconds = duration
@@ -292,8 +307,15 @@ def perform_update(
     state.last_run_error = None
     state.reboot_required = reboot_needed
     if reboot_needed and config.reboot_policy.mode == "scheduled_if_required":
-        reboot_scheduler(config.reboot_policy.grace_minutes)
-        state.last_reboot_scheduled_at = utc_now_iso()
+        try:
+            reboot_scheduler(config.reboot_policy.grace_minutes)
+            state.last_reboot_scheduled_at = utc_now_iso()
+        except Exception as exc:
+            # Keep the successful outcome, but make the failed reboot arrangement visible
+            # in saved state (/lastrun) even if notifications also fail.
+            LOGGER.warning("failed to schedule reboot: %s", exc)
+            reboot_failed = str(exc)
+            state.last_run_error = f"reboot scheduling failed: {exc}"
     store.save(state)
 
     if active_notifiers:
@@ -303,11 +325,15 @@ def perform_update(
             packages_changed,
             package_details,
             reboot_needed,
+            reboot_failed=reboot_failed is not None,
         )
         errors_by_provider = _notify(active_notifiers, success_message)
         if reboot_needed:
-            pre_reboot = f"[{config.server_name}] Reboot scheduled in {config.reboot_policy.grace_minutes} minutes."
-            reboot_errors = _notify(active_notifiers, pre_reboot)
+            if reboot_failed is None:
+                pre_reboot = f"[{config.server_name}] Reboot scheduled in {config.reboot_policy.grace_minutes} minutes."
+            else:
+                pre_reboot = f"[{config.server_name}] Reboot required but scheduling failed: {reboot_failed}"
+            reboot_errors = _notify(active_notifiers, _truncate_message(pre_reboot))
             for provider, provider_errors in reboot_errors.items():
                 errors_by_provider.setdefault(provider, []).extend(provider_errors)
         if _apply_notifier_errors(state, errors_by_provider):

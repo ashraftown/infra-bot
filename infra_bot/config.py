@@ -33,6 +33,8 @@ class SlackConfig:
 
 @dataclass
 class UpdatePolicy:
+    # schedule is informational only; the systemd timer (OnCalendar computed from
+    # stagger_minutes at install time) drives the actual weekly run.
     schedule: str = "Sun 02:00"
     stagger_minutes: int = 0
     use_dist_upgrade: bool = True
