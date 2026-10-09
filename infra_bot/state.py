@@ -121,6 +121,9 @@ class StateStore:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+                # state.json holds run results only (no secrets). Make it readable so the
+                # unprivileged bot service can read files written by the root update run.
+                os.fchmod(handle.fileno(), 0o644)
             os.replace(tmp_name, self.path)
         except Exception:
             try:

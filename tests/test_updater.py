@@ -3,9 +3,11 @@ from __future__ import annotations
 from infra_bot.config import AppConfig, MessagingConfig, PathConfig, RebootPolicy, TelegramConfig, UpdatePolicy
 from infra_bot.state import StateStore
 from infra_bot.updater import (
+    MAX_NOTIFY_CHARS,
     CommandResult,
     PackageUpdate,
     _build_success_message,
+    _truncate_message,
     parse_upgradable_output,
     perform_update,
 )
@@ -148,3 +150,87 @@ def test_perform_update_records_slack_send_failures(tmp_path) -> None:
     assert "boom" in (result.error or "")
     assert state.last_slack_error == "C1: boom"
     assert state.last_run_package_details == []
+
+
+def test_truncate_message_respects_provider_limit() -> None:
+    assert _truncate_message("short message") == "short message"
+    truncated = _truncate_message("x" * (MAX_NOTIFY_CHARS + 50))
+    assert len(truncated) == MAX_NOTIFY_CHARS
+    assert truncated.endswith("…")
+
+
+def test_perform_update_failure_keeps_reboot_required_flag(tmp_path) -> None:
+    config = build_config(tmp_path)
+    config.paths.reboot_marker_file.write_text("", encoding="utf-8")
+    store = StateStore(config.paths.state_file)
+
+    def runner(cmd, env=None):
+        if cmd[:2] == ["apt-get", "update"]:
+            return CommandResult(cmd, 1, "", "apt boom")
+        return CommandResult(cmd, 0, "", "")
+
+    result = perform_update(
+        config,
+        store,
+        notifiers=[DummyNotifier("telegram")],
+        command_runner=runner,
+        reboot_scheduler=lambda _: None,
+    )
+
+    assert result.status == "failed"
+    assert result.reboot_required is True
+    assert store.load().reboot_required is True
+
+
+def test_perform_update_truncates_failure_notification(tmp_path) -> None:
+    config = build_config(tmp_path)
+    store = StateStore(config.paths.state_file)
+    notifier = DummyNotifier("telegram")
+
+    def runner(cmd, env=None):
+        if cmd[:2] == ["apt-get", "update"]:
+            return CommandResult(cmd, 1, "", "e" * 6000)
+        return CommandResult(cmd, 0, "", "")
+
+    perform_update(
+        config,
+        store,
+        notifiers=[notifier],
+        command_runner=runner,
+        reboot_scheduler=lambda _: None,
+    )
+
+    failed_messages = [msg for msg in notifier.messages if "Update failed" in msg]
+    assert failed_messages
+    assert len(failed_messages[0]) <= MAX_NOTIFY_CHARS
+
+
+def test_perform_update_survives_reboot_scheduler_failure(tmp_path) -> None:
+    config = build_config(tmp_path)
+    config.paths.reboot_marker_file.write_text("", encoding="utf-8")
+    store = StateStore(config.paths.state_file)
+    notifier = DummyNotifier("telegram")
+
+    def failing_scheduler(grace_minutes):
+        raise RuntimeError("shutdown failed")
+
+    def runner(cmd, env=None):
+        if cmd[:2] == ["apt", "list"]:
+            return CommandResult(cmd, 0, "Listing...\n", "")
+        return CommandResult(cmd, 0, "", "")
+
+    result = perform_update(
+        config,
+        store,
+        notifiers=[notifier],
+        command_runner=runner,
+        reboot_scheduler=failing_scheduler,
+    )
+
+    assert result.status == "success"
+    state = store.load()
+    assert state.reboot_required is True
+    assert state.last_reboot_scheduled_at is None
+    messages = "\n".join(notifier.messages)
+    assert "scheduling failed" in messages
+    assert "Reboot scheduled" not in messages

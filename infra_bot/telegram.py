@@ -38,10 +38,12 @@ class TelegramClient:
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 body = response.read().decode("utf-8")
+            parsed = json.loads(body)
         except (URLError, TimeoutError, socket.timeout) as exc:
             raise TelegramError(str(exc)) from exc
-
-        parsed = json.loads(body)
+        except ValueError as exc:
+            # Non-JSON bodies (proxies, captive portals) must not crash the polling loop.
+            raise TelegramError(f"invalid Telegram response: {exc}") from exc
         if not parsed.get("ok"):
             raise TelegramError(str(parsed))
         return parsed

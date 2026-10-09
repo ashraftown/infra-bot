@@ -28,9 +28,9 @@ def _service_health() -> str:
         capture_output=True,
         text=True,
     )
-    if result.returncode == 0:
-        return result.stdout.strip()
-    return "unknown"
+    state = result.stdout.strip()
+    # is-active exits 3 with stdout "inactive"; surface the real state when present.
+    return state if state else "unknown"
 
 
 def render_help() -> str:

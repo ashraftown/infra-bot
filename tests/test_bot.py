@@ -19,6 +19,15 @@ class TimeoutThenStopTelegram:
         raise TelegramError("timed out")
 
 
+class AlwaysFailingTelegram:
+    def __init__(self):
+        self.calls = 0
+
+    def get_updates(self, offset=None, timeout=30):
+        self.calls += 1
+        raise TelegramError("network down")
+
+
 def build_config(tmp_path, mode="telegram"):
     telegram = TelegramConfig(bot_token="token", allowed_chat_ids=[123]) if mode in {"telegram", "both"} else None
     return AppConfig(
@@ -50,6 +59,26 @@ def test_run_polling_bot_persists_telegram_errors(tmp_path, monkeypatch) -> None
     state = store.load()
     assert state.last_telegram_error == "timed out"
     assert telegram.calls == 1
+
+
+def test_run_polling_bot_backs_off_between_failures(tmp_path, monkeypatch) -> None:
+    config = build_config(tmp_path)
+    store = StateStore(config.paths.state_file)
+    telegram = AlwaysFailingTelegram()
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            raise StopLoop()
+
+    monkeypatch.setattr("infra_bot.bot.time.sleep", fake_sleep)
+
+    with pytest.raises(StopLoop):
+        run_polling_bot(config, store, telegram, sleep_seconds=2)
+
+    assert sleeps == [2, 4]
+    assert telegram.calls == 2
 
 
 def test_run_enabled_bots_starts_only_telegram_for_telegram_mode(tmp_path) -> None:

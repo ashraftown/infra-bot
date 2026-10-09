@@ -1,9 +1,0 @@
-[Unit]
-Description=Infra Bot scheduled reboot helper
-
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/shutdown -r +5 "infra-bot scheduled reboot"
-User=root
-Group=root
-
