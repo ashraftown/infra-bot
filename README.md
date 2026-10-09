@@ -211,6 +211,8 @@ sudo ./scripts/install.sh --update     # reinstall from the current checkout onl
 
 ```bash
 sudo mkdir -p /opt/infra-bot/src /etc/infra-bot /var/lib/infra-bot
+sudo chown infra-bot:infra-bot /var/lib/infra-bot
+sudo chmod 2750 /var/lib/infra-bot
 sudo cp -R . /opt/infra-bot/src
 cd /opt/infra-bot/src
 sudo python3 -m venv /opt/infra-bot/.venv

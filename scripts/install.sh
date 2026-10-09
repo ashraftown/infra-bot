@@ -592,7 +592,10 @@ create_user_and_dirs() {
   fi
 
   install -d -m 0755 -o root -g root "${APP_HOME}" "${SRC_DIR}" "${BIN_DIR}" "${CONFIG_DIR}"
-  install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${STATE_DIR}"
+  install -d -m 2750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${STATE_DIR}"
+  # The setgid bit makes root-written state.json inherit the service group, so the
+  # unprivileged bot service can read it (files themselves are 0640).
+  chmod 2750 "${STATE_DIR}"
 }
 
 normalize_github_https_url() {

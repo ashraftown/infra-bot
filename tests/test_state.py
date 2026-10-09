@@ -47,8 +47,9 @@ def test_save_is_atomic_and_readable(tmp_path) -> None:
 
 def test_save_is_readable_by_bot_service_user(tmp_path) -> None:
     # run-update writes state as root; run-bot runs as the unprivileged infra-bot
-    # user and must still be able to read it (mode 0644, no secrets in state).
+    # user and must still be able to read it (0640 file inside the 2750 setgid
+    # state directory; see install.sh). No tokens are stored in state.
     path = tmp_path / "state.json"
     store = StateStore(path)
     store.save(BotState(last_run_status="success"))
-    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640

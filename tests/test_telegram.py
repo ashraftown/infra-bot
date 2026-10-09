@@ -78,3 +78,15 @@ def test_request_wraps_non_json_body(monkeypatch) -> None:
 
     with pytest.raises(TelegramError, match="invalid Telegram response"):
         client.get_updates()
+
+
+def test_request_wraps_non_object_json(monkeypatch) -> None:
+    client = TelegramClient("token")
+
+    def fake_urlopen(request, timeout):
+        return _FakeResponse(b"[]")
+
+    monkeypatch.setattr("infra_bot.telegram.urlopen", fake_urlopen)
+
+    with pytest.raises(TelegramError, match="invalid Telegram response type"):
+        client.get_updates()

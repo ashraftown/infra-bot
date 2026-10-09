@@ -44,6 +44,9 @@ class TelegramClient:
         except ValueError as exc:
             # Non-JSON bodies (proxies, captive portals) must not crash the polling loop.
             raise TelegramError(f"invalid Telegram response: {exc}") from exc
+        if not isinstance(parsed, dict):
+            # The Bot API always answers with an object; anything else is a wrong endpoint.
+            raise TelegramError(f"invalid Telegram response type: {type(parsed).__name__}")
         if not parsed.get("ok"):
             raise TelegramError(str(parsed))
         return parsed

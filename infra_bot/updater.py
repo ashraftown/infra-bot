@@ -174,8 +174,12 @@ def _build_success_message(
     packages_changed: int | None,
     package_details: list[str],
     reboot_needed: bool,
+    reboot_failed: bool = False,
 ) -> str:
-    suffix = "reboot scheduled" if reboot_needed else "no reboot required"
+    if reboot_failed:
+        suffix = "reboot required (scheduling failed)"
+    else:
+        suffix = "reboot scheduled" if reboot_needed else "no reboot required"
     header = (
         f"[{server_name}] Update completed successfully in {duration}s. "
         f"Packages changed: {packages_changed if packages_changed is not None else 'unknown'}. {suffix}."
@@ -307,9 +311,11 @@ def perform_update(
             reboot_scheduler(config.reboot_policy.grace_minutes)
             state.last_reboot_scheduled_at = utc_now_iso()
         except Exception as exc:
-            # Keep the successful run recorded even when the scheduled reboot could not be arranged.
+            # Keep the successful outcome, but make the failed reboot arrangement visible
+            # in saved state (/lastrun) even if notifications also fail.
             LOGGER.warning("failed to schedule reboot: %s", exc)
             reboot_failed = str(exc)
+            state.last_run_error = f"reboot scheduling failed: {exc}"
     store.save(state)
 
     if active_notifiers:
@@ -319,6 +325,7 @@ def perform_update(
             packages_changed,
             package_details,
             reboot_needed,
+            reboot_failed=reboot_failed is not None,
         )
         errors_by_provider = _notify(active_notifiers, success_message)
         if reboot_needed:

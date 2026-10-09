@@ -231,6 +231,8 @@ def test_perform_update_survives_reboot_scheduler_failure(tmp_path) -> None:
     state = store.load()
     assert state.reboot_required is True
     assert state.last_reboot_scheduled_at is None
+    assert state.last_run_error is not None
+    assert "reboot scheduling failed" in state.last_run_error
     messages = "\n".join(notifier.messages)
     assert "scheduling failed" in messages
     assert "Reboot scheduled" not in messages
